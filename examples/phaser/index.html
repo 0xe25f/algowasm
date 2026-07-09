@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en-GB">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>AlgoWASM Phaser Example</title>
+    <style>
+      body {
+        margin: 0;
+        font-family: system-ui, sans-serif;
+        background: #151a18;
+        color: #f7fbf5;
+      }
+
+      .controls {
+        display: grid;
+        grid-template-columns: repeat(5, minmax(0, 1fr));
+        gap: 10px;
+        padding: 12px;
+      }
+
+      label {
+        display: grid;
+        gap: 4px;
+      }
+
+      input,
+      button {
+        min-height: 38px;
+        border: 0;
+        border-radius: 6px;
+        padding: 0 10px;
+        font: inherit;
+      }
+
+      button {
+        align-self: end;
+        background: #8be0b8;
+        color: #111615;
+      }
+
+      .status {
+        padding: 0 12px 12px;
+        min-height: 24px;
+      }
+
+      @media (max-width: 720px) {
+        .controls {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <form class="controls">
+      <label>
+        Seed
+        <input id="seedInput" type="text" inputmode="numeric" value="1234">
+      </label>
+      <label>
+        Length
+        <input id="lengthInput" type="text" inputmode="numeric" value="02:00">
+      </label>
+      <label>
+        Profile
+        <select id="profileInput"></select>
+      </label>
+      <button id="startTrack" type="button">Start Selected</button>
+      <button id="randomTrack" type="button">New Random</button>
+    </form>
+    <div id="status" class="status">Time: 00:00 / 02:00. Ready.</div>
+    <div id="game"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

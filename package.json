@@ -1,0 +1,35 @@
+{
+  "name": "algowasm-workspace",
+  "private": true,
+  "type": "module",
+  "repository": { "type": "git", "url": "git+https://github.com/0xe25f/algowasm.git" },
+  "homepage": "https://github.com/0xe25f/algowasm#readme",
+  "bugs": { "url": "https://github.com/0xe25f/algowasm/issues" },
+  "workspaces": [
+    "packages/algo-wasm",
+    "examples/vanilla",
+    "examples/react",
+    "examples/phaser"
+  ],
+  "scripts": {
+    "build": "npm run build:wasm && npm run build:ts",
+    "build:wasm": "node scripts/build-wasm.mjs",
+    "build:ts": "node scripts/build-package.mjs",
+    "build:demo": "node scripts/build-demo.mjs",
+    "test": "npm run test:package",
+    "test:package": "node --test test/package/*.test.mjs",
+    "test:rust": "cargo test --workspace",
+    "test:browser": "playwright test",
+    "lint": "npm run lint:indent && npm run lint:spelling",
+    "lint:indent": "node scripts/check-indentation.mjs",
+    "lint:spelling": "node scripts/check-british-english.mjs",
+    "format": "prettier --write ."
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.45.0",
+    "prettier": "^3.3.3",
+    "typescript": "^5.5.4",
+    "vite": "^5.3.4",
+    "vitest": "^2.0.5"
+  }
+}

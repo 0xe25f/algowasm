@@ -1,0 +1,20 @@
+[workspace]
+members = [
+  "crates/algo-wasm-core",
+  "crates/algo-wasm-ffi"
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+license = "AGPL-3.0-or-later"
+repository = "https://example.invalid/algo-wasm"
+rust-version = "1.82"
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+panic = "warn"
+unwrap_used = "warn"
+expect_used = "warn"

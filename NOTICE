@@ -1,0 +1,15 @@
+AlgoWASM
+Copyright (C) 2026 Agent 57951
+
+This product includes software developed for the AlgoWASM project
+(https://github.com/0xe25f/algowasm).
+
+AlgoWASM is licensed under the GNU Affero General Public License v3.0 or
+later (AGPL-3.0-or-later). See the LICENSE file for the full licence text.
+
+If you run a modified version of this software as a network service, you
+must make the complete corresponding source code available to users of
+that service, as required by section 13 of the AGPL-3.0.
+
+No third-party source code, samples, or copyrighted assets are bundled
+with this software.

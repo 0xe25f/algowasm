@@ -1,0 +1,19 @@
+{
+  "name": "algo-wasm-example-phaser",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "predev": "node ../../scripts/copy-example-assets.mjs phaser",
+    "dev": "vite --host 127.0.0.1",
+    "prebuild": "node ../../scripts/copy-example-assets.mjs phaser",
+    "build": "vite build"
+  },
+  "dependencies": {
+    "@algo-wasm/algo-wasm": "file:../../packages/algo-wasm",
+    "phaser": "^3.80.1"
+  },
+  "devDependencies": {
+    "vite": "^5.3.4",
+    "typescript": "^5.5.4"
+  }
+}

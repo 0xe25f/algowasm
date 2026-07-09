@@ -1,0 +1,464 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://algo-wasm.invalid/schema/profile.schema.json",
+  "title": "AlgoWASM profile",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id",
+    "displayName",
+    "version",
+    "tempo",
+    "scales",
+    "chordRules",
+    "rhythmRules",
+    "bassRules",
+    "melodyRules",
+    "arrangementRules",
+    "automationRules",
+    "patches",
+    "mixer",
+    "limits"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "displayName": {
+      "type": "string",
+      "minLength": 1
+    },
+    "version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "tempo": {
+      "type": "object",
+      "required": [
+        "minBpm",
+        "maxBpm",
+        "defaultBpm"
+      ],
+      "properties": {
+        "minBpm": {
+          "type": "number",
+          "minimum": 40
+        },
+        "maxBpm": {
+          "type": "number",
+          "maximum": 240
+        },
+        "defaultBpm": {
+          "type": "number"
+        }
+      },
+      "additionalProperties": false
+    },
+    "scales": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "name",
+          "weight"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "weight": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "chordRules": {
+      "$ref": "#/$defs/chordRules"
+    },
+    "rhythmRules": {
+      "$ref": "#/$defs/rhythmRules"
+    },
+    "bassRules": {
+      "$ref": "#/$defs/bassRules"
+    },
+    "melodyRules": {
+      "$ref": "#/$defs/melodyRules"
+    },
+    "arrangementRules": {
+      "$ref": "#/$defs/arrangementRules"
+    },
+    "automationRules": {
+      "$ref": "#/$defs/automationRules"
+    },
+    "patches": {
+      "type": "array",
+      "minItems": 11,
+      "maxItems": 11,
+      "items": {
+        "$ref": "#/$defs/patch"
+      }
+    },
+    "mixer": {
+      "$ref": "#/$defs/mixer"
+    },
+    "limits": {
+      "$ref": "#/$defs/limits"
+    }
+  },
+  "$defs": {
+    "unit": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "pan": {
+      "type": "number",
+      "minimum": -1,
+      "maximum": 1
+    },
+    "gain": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 2
+    },
+    "trackId": {
+      "enum": [
+        "kick",
+        "snare",
+        "closed_hat",
+        "open_hat",
+        "percussion",
+        "bass",
+        "chords",
+        "pad",
+        "lead",
+        "arp",
+        "fx"
+      ]
+    },
+    "wave": {
+      "enum": [
+        "sine",
+        "triangle",
+        "saw",
+        "square",
+        "pulse",
+        "noise"
+      ]
+    },
+    "chordRules": {
+      "type": "object",
+      "required": [
+        "cadenceWeight",
+        "movementWeight",
+        "suspendedChance",
+        "brightBorrowChance"
+      ],
+      "properties": {
+        "cadenceWeight": {
+          "$ref": "#/$defs/unit"
+        },
+        "movementWeight": {
+          "$ref": "#/$defs/unit"
+        },
+        "suspendedChance": {
+          "$ref": "#/$defs/unit"
+        },
+        "brightBorrowChance": {
+          "$ref": "#/$defs/unit"
+        }
+      },
+      "additionalProperties": false
+    },
+    "rhythmRules": {
+      "type": "object",
+      "required": [
+        "kickDensity",
+        "hatDensity",
+        "percussionDensity",
+        "fillChance"
+      ],
+      "properties": {
+        "kickDensity": {
+          "$ref": "#/$defs/unit"
+        },
+        "hatDensity": {
+          "$ref": "#/$defs/unit"
+        },
+        "percussionDensity": {
+          "$ref": "#/$defs/unit"
+        },
+        "fillChance": {
+          "$ref": "#/$defs/unit"
+        }
+      },
+      "additionalProperties": false
+    },
+    "bassRules": {
+      "type": "object",
+      "required": [
+        "density",
+        "slideChance",
+        "accentChance",
+        "octaveJumpChance"
+      ],
+      "properties": {
+        "density": {
+          "$ref": "#/$defs/unit"
+        },
+        "slideChance": {
+          "$ref": "#/$defs/unit"
+        },
+        "accentChance": {
+          "$ref": "#/$defs/unit"
+        },
+        "octaveJumpChance": {
+          "$ref": "#/$defs/unit"
+        }
+      },
+      "additionalProperties": false
+    },
+    "melodyRules": {
+      "type": "object",
+      "required": [
+        "density",
+        "mutationChance",
+        "callResponseChance",
+        "maxRangeSemitones"
+      ],
+      "properties": {
+        "density": {
+          "$ref": "#/$defs/unit"
+        },
+        "mutationChance": {
+          "$ref": "#/$defs/unit"
+        },
+        "callResponseChance": {
+          "$ref": "#/$defs/unit"
+        },
+        "maxRangeSemitones": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 36
+        }
+      },
+      "additionalProperties": false
+    },
+    "arrangementRules": {
+      "type": "object",
+      "required": [
+        "minSectionBars",
+        "maxSectionBars",
+        "futureBars",
+        "resetChance"
+      ],
+      "properties": {
+        "minSectionBars": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "maxSectionBars": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 64
+        },
+        "futureBars": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 64
+        },
+        "resetChance": {
+          "$ref": "#/$defs/unit"
+        }
+      },
+      "additionalProperties": false
+    },
+    "automationRules": {
+      "type": "object",
+      "required": [
+        "filterMotion",
+        "sendMotion",
+        "panMotion"
+      ],
+      "properties": {
+        "filterMotion": {
+          "$ref": "#/$defs/unit"
+        },
+        "sendMotion": {
+          "$ref": "#/$defs/unit"
+        },
+        "panMotion": {
+          "$ref": "#/$defs/unit"
+        }
+      },
+      "additionalProperties": false
+    },
+    "patch": {
+      "type": "object",
+      "required": [
+        "track",
+        "wave",
+        "gain",
+        "pan",
+        "attackMs",
+        "decayMs",
+        "sustain",
+        "releaseMs",
+        "filterCutoff",
+        "resonance",
+        "delaySend",
+        "reverbSend"
+      ],
+      "properties": {
+        "track": {
+          "$ref": "#/$defs/trackId"
+        },
+        "wave": {
+          "$ref": "#/$defs/wave"
+        },
+        "gain": {
+          "$ref": "#/$defs/gain"
+        },
+        "pan": {
+          "$ref": "#/$defs/pan"
+        },
+        "attackMs": {
+          "type": "number",
+          "minimum": 0
+        },
+        "decayMs": {
+          "type": "number",
+          "minimum": 0
+        },
+        "sustain": {
+          "$ref": "#/$defs/unit"
+        },
+        "releaseMs": {
+          "type": "number",
+          "minimum": 0
+        },
+        "filterCutoff": {
+          "type": "number",
+          "minimum": 20,
+          "maximum": 20000
+        },
+        "resonance": {
+          "$ref": "#/$defs/unit"
+        },
+        "delaySend": {
+          "$ref": "#/$defs/unit"
+        },
+        "reverbSend": {
+          "$ref": "#/$defs/unit"
+        }
+      },
+      "additionalProperties": false
+    },
+    "mixer": {
+      "type": "object",
+      "required": [
+        "masterGain",
+        "limiterDrive",
+        "delayFeedback",
+        "reverbMix",
+        "tracks"
+      ],
+      "properties": {
+        "masterGain": {
+          "$ref": "#/$defs/gain"
+        },
+        "limiterDrive": {
+          "$ref": "#/$defs/gain"
+        },
+        "delayFeedback": {
+          "$ref": "#/$defs/unit"
+        },
+        "reverbMix": {
+          "$ref": "#/$defs/unit"
+        },
+        "tracks": {
+          "type": "array",
+          "minItems": 11,
+          "maxItems": 11,
+          "items": {
+            "type": "object",
+            "required": [
+              "track",
+              "gain",
+              "pan"
+            ],
+            "properties": {
+              "track": {
+                "$ref": "#/$defs/trackId"
+              },
+              "gain": {
+                "$ref": "#/$defs/gain"
+              },
+              "pan": {
+                "$ref": "#/$defs/pan"
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "limits": {
+      "type": "object",
+      "required": [
+        "minSampleRate",
+        "maxSampleRate",
+        "minBpm",
+        "maxBpm",
+        "maxTracks",
+        "maxVoices",
+        "maxBarsQueued",
+        "maxEventsPerBlock"
+      ],
+      "properties": {
+        "minSampleRate": {
+          "type": "integer",
+          "minimum": 22050
+        },
+        "maxSampleRate": {
+          "type": "integer",
+          "maximum": 96000
+        },
+        "minBpm": {
+          "type": "number",
+          "minimum": 40
+        },
+        "maxBpm": {
+          "type": "number",
+          "maximum": 240
+        },
+        "maxTracks": {
+          "type": "integer",
+          "const": 11
+        },
+        "maxVoices": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 64
+        },
+        "maxBarsQueued": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 64
+        },
+        "maxEventsPerBlock": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 512
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

@@ -1,0 +1,12 @@
+node_modules/
+target/
+dist/
+packages/algo-wasm/dist/
+packages/algo-wasm/pkg/
+examples/*/dist/
+examples/*/public/algo_wasm.wasm
+examples/*/public/algo-worklet.js
+demo/vendor/
+playwright-report/
+test-results/
+.DS_Store

@@ -1,0 +1,56 @@
+{
+  "name": "@algo-wasm/algo-wasm",
+  "version": "1.0.0",
+  "description": "A WebAssembly-first deterministic algorithmic music engine for modern browsers.",
+  "type": "module",
+  "repository": { "type": "git", "url": "git+https://github.com/0xe25f/algowasm.git" },
+  "homepage": "https://github.com/0xe25f/algowasm#readme",
+  "bugs": { "url": "https://github.com/0xe25f/algowasm/issues" },
+  "sideEffects": false,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./worklet": "./dist/worklet/algo-worklet.js",
+    "./wasm": "./dist/algo_wasm.wasm",
+    "./profile-schema": "./dist/profile-schema.json",
+    "./integrations/phaser": {
+      "types": "./dist/integrations/phaser.d.ts",
+      "import": "./dist/integrations/phaser.js"
+    },
+    "./integrations/react": {
+      "types": "./dist/integrations/react.d.ts",
+      "import": "./dist/integrations/react.js"
+    },
+    "./integrations/vue": {
+      "types": "./dist/integrations/vue.d.ts",
+      "import": "./dist/integrations/vue.js"
+    },
+    "./integrations/svelte": {
+      "types": "./dist/integrations/svelte.d.ts",
+      "import": "./dist/integrations/svelte.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "NOTICE",
+    "CHANGELOG.md"
+  ],
+  "scripts": {
+    "build": "node ../../scripts/build-package.mjs",
+    "test": "node --test ../../test/package/*.test.mjs"
+  },
+  "keywords": [
+    "webassembly",
+    "webaudio",
+    "audioworklet",
+    "algorithmic-music",
+    "procedural-audio"
+  ],
+  "license": "AGPL-3.0-or-later"
+}

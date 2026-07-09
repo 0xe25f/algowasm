@@ -1,0 +1,17 @@
+{
+  "name": "algo-wasm-example-vanilla",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "predev": "node ../../scripts/copy-example-assets.mjs vanilla",
+    "dev": "vite --host 127.0.0.1",
+    "prebuild": "node ../../scripts/copy-example-assets.mjs vanilla",
+    "build": "vite build"
+  },
+  "dependencies": {
+    "@algo-wasm/algo-wasm": "file:../../packages/algo-wasm"
+  },
+  "devDependencies": {
+    "vite": "^5.3.4"
+  }
+}
