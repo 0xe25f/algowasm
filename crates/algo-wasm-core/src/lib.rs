@@ -8,6 +8,7 @@
 pub mod composition;
 pub mod dsp;
 pub mod export;
+pub mod genome;
 pub mod profile;
 pub mod render;
 pub mod rng;
@@ -20,5 +21,6 @@ pub use profile::{
   ProfileError, RhythmRules, SafetyLimits, ScaleRule, TempoRules
 };
 pub use render::{Engine, EngineError, EngineMetrics, RenderOptions, Snapshot, TrackSnapshot};
+pub use genome::SongGenome;
 pub use rng::Rng64;
 pub use types::{Mood, MusicEvent, SectionKind, TrackId, WaveShape};

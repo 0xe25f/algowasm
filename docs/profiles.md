@@ -39,10 +39,10 @@ await player.start();
 ## Profile Fields
 
 - `id`, `displayName`, `version`: stable identity fields. Keep `id` unique and unchanged once released.
-- `tempo`: `minBpm`, `maxBpm`, and `defaultBpm`. Must sit inside the profile's own `limits.minBpm` and `limits.maxBpm`.
+- `tempo`: `minBpm`, `maxBpm`, and `defaultBpm`. Must sit inside the profile's own `limits.minBpm` and `limits.maxBpm`. Each seed picks its own tempo inside `minBpm` to `maxBpm`, leaning towards `defaultBpm`.
 - `scales`: a weighted list of scale names. At least one scale is required. Higher weight means the scale is picked more often.
 - `chordRules`: `cadenceWeight` and `movementWeight` shape progression scoring. `suspendedChance` and `brightBorrowChance` control how often suspended and borrowed major chords appear.
-- `rhythmRules`: `kickDensity`, `hatDensity`, and `percussionDensity` control how often each drum fires on its fixed grid position. `fillChance` controls how often the final bar of a 4-bar pattern rolls into a fill.
+- `rhythmRules`: `kickDensity`, `hatDensity`, and `percussionDensity` control how often each drum fires on its seeded grid positions. A `kickDensity` of 1 keeps a four-on-the-floor kick, and lower values pick a broken kick pattern. `fillChance` controls how often the final bar of a section rolls into a fill.
 - `bassRules`: `density`, `slideChance`, `accentChance`, and `octaveJumpChance` shape the monophonic bassline.
 - `melodyRules`: `density`, `mutationChance`, `callResponseChance`, and `maxRangeSemitones` shape lead motifs.
 - `arrangementRules`: `minSectionBars` and `maxSectionBars` bound section length. `futureBars` controls how many bars stay queued ahead of playback. `resetChance` controls how often the arrangement returns to a fresh section instead of continuing to build.
@@ -57,9 +57,11 @@ The generative rule groups (`chordRules`, `rhythmRules`, `bassRules`, `melodyRul
 
 The `patches` and `mixer` fields decide *how it sounds*: oscillator shape, envelope, filter cutoff, panning, and send levels. `dub_deep_house` demonstrates this directly. Its rule groups stay close to `amiga_house_95ish`, but its patches swap the bright saw bass and pulse stabs for rounder triangle and sine sources with longer envelopes and heavier reverb and delay sends.
 
-### Known limitation: `resonance` is not yet applied
+The seed changes the sound as well. Each seed applies moderate changes to the tonal patches (cutoff, resonance, envelope, sends, and sometimes a wave swap within the same family) and picks its own drum kit tuning. A profile sets the character, and the seed sets the song. See [algorithms.md](algorithms.md#song-identity).
 
-Each patch has a `resonance` field, and it is validated to stay between 0 and 1. The current DSP filter (`OnePole` in `crates/algo-wasm-core/src/dsp.rs`) is a one-pole low-pass filter with a cutoff but no resonance or Q control, so `resonance` has no audible effect yet. Filter movement in the built-in profiles comes from `filterCutoff`, `automationRules.filterMotion`, and the accent boost applied to bass notes. A genuinely resonant, self-oscillating filter (the sound behind classic acid basslines) would need a new filter implementation before `resonance` can do anything.
+### Resonance
+
+Tonal tracks (`bass`, `chords`, `pad`, `lead`, and `arp`) run through a resonant state-variable low-pass filter. `resonance` runs from 0, a gentle slope, to 1, a sharp peak. Higher values give the squelchy acid bass sound, especially while `automationRules.filterMotion` sweeps the cutoff.
 
 ## Choosing A Profile By Genre
 

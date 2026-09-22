@@ -1,10 +1,60 @@
-use crate::dsp::{denormal_guard, midi_to_hz, noise, OnePole};
+use crate::dsp::{denormal_guard, midi_to_hz, noise, OnePole, Svf};
 use crate::profile::Patch;
 use crate::types::{TrackId, WaveShape};
 use std::f32::consts::TAU;
 
 /// Maximum number of simultaneous voices.
 pub const MAX_VOICES: usize = 48;
+
+/// Per-song drum synthesis parameters.
+///
+/// The drum tracks are synthesised rather than sample based, so a seeded kit
+/// changes their pitch, punch, and decay from song to song.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DrumKit {
+  pub kick_pitch: f32,
+  pub kick_sweep: f32,
+  pub kick_sweep_rate: f32,
+  pub kick_decay: f32,
+  pub kick_click: f32,
+  pub snare_tone: f32,
+  pub snare_decay: f32,
+  pub snare_body: f32,
+  pub hat_partial_a: f32,
+  pub hat_partial_b: f32,
+  pub hat_closed_decay: f32,
+  pub hat_open_decay: f32,
+  pub percussion_decay: f32,
+  pub fx_sweep_rate: f32
+}
+
+impl DrumKit {
+  /// The original fixed kit.
+  pub const fn classic() -> Self {
+    Self {
+      kick_pitch: 42.0,
+      kick_sweep: 86.0,
+      kick_sweep_rate: 42.0,
+      kick_decay: 8.5,
+      kick_click: 0.28,
+      snare_tone: 185.0,
+      snare_decay: 18.0,
+      snare_body: 0.38,
+      hat_partial_a: 421.0,
+      hat_partial_b: 743.0,
+      hat_closed_decay: 38.0,
+      hat_open_decay: 5.0,
+      percussion_decay: 24.0,
+      fx_sweep_rate: 2.0
+    }
+  }
+}
+
+impl Default for DrumKit {
+  fn default() -> Self {
+    Self::classic()
+  }
+}
 
 /// A fixed-pool synth voice.
 #[derive(Clone, Copy, Debug)]
@@ -22,7 +72,8 @@ pub struct Voice {
   pub accent: bool,
   pub slide: bool,
   noise_state: u32,
-  filter: OnePole
+  filter: OnePole,
+  tone_filter: Svf
 }
 
 impl Voice {
@@ -42,7 +93,8 @@ impl Voice {
       accent: false,
       slide: false,
       noise_state: 1,
-      filter: OnePole::new()
+      filter: OnePole::new(),
+      tone_filter: Svf::new()
     }
   }
 
@@ -74,21 +126,22 @@ impl Voice {
     self.slide = slide;
     self.noise_state = note as u32 ^ length_samples ^ 0xa53c_9e11;
     self.filter = OnePole::new();
+    self.tone_filter = Svf::new();
   }
 
   /// Renders one mono sample.
-  pub fn render(&mut self, patch: Patch, sample_rate: f32) -> f32 {
+  pub fn render(&mut self, patch: Patch, kit: &DrumKit, sample_rate: f32) -> f32 {
     if !self.active {
       return 0.0;
     }
 
     let value = match self.track {
-      TrackId::Kick => self.render_kick(sample_rate),
-      TrackId::Snare => self.render_snare(sample_rate),
-      TrackId::ClosedHat => self.render_hat(sample_rate, false),
-      TrackId::OpenHat => self.render_hat(sample_rate, true),
-      TrackId::Percussion => self.render_percussion(sample_rate),
-      TrackId::Fx => self.render_fx(sample_rate),
+      TrackId::Kick => self.render_kick(kit, sample_rate),
+      TrackId::Snare => self.render_snare(kit, sample_rate),
+      TrackId::ClosedHat => self.render_hat(kit, sample_rate, false),
+      TrackId::OpenHat => self.render_hat(kit, sample_rate, true),
+      TrackId::Percussion => self.render_percussion(kit, sample_rate),
+      TrackId::Fx => self.render_fx(kit, sample_rate),
       _ => self.render_tonal(patch, sample_rate)
     };
 
@@ -101,13 +154,13 @@ impl Voice {
     denormal_guard(value * patch.gain * self.velocity)
   }
 
-  fn render_kick(&mut self, sample_rate: f32) -> f32 {
+  fn render_kick(&mut self, kit: &DrumKit, sample_rate: f32) -> f32 {
     let t = self.age_samples as f32 / sample_rate;
-    let env = (-t * 8.5).exp();
-    let pitch = 42.0 + 86.0 * (-t * 42.0).exp();
+    let env = (-t * kit.kick_decay).exp();
+    let pitch = kit.kick_pitch + kit.kick_sweep * (-t * kit.kick_sweep_rate).exp();
     self.phase = advance_phase(self.phase, pitch, sample_rate);
     let click = if t < 0.004 {
-      noise(&mut self.noise_state) * (1.0 - t / 0.004) * 0.28
+      noise(&mut self.noise_state) * (1.0 - t / 0.004) * kit.kick_click
     } else {
       0.0
     };
@@ -115,42 +168,42 @@ impl Voice {
     (self.phase * TAU).sin() * env + click
   }
 
-  fn render_snare(&mut self, sample_rate: f32) -> f32 {
+  fn render_snare(&mut self, kit: &DrumKit, sample_rate: f32) -> f32 {
     let t = self.age_samples as f32 / sample_rate;
-    let noise_env = (-t * 18.0).exp();
-    let tone_env = (-t * 12.0).exp();
-    self.phase = advance_phase(self.phase, 185.0, sample_rate);
-    let body = (self.phase * TAU).sin() * tone_env * 0.38;
+    let noise_env = (-t * kit.snare_decay).exp();
+    let tone_env = (-t * kit.snare_decay * 0.66).exp();
+    self.phase = advance_phase(self.phase, kit.snare_tone, sample_rate);
+    let body = (self.phase * TAU).sin() * tone_env * kit.snare_body;
     let snap = noise(&mut self.noise_state) * noise_env;
 
     body + snap * 0.72
   }
 
-  fn render_hat(&mut self, sample_rate: f32, open: bool) -> f32 {
+  fn render_hat(&mut self, kit: &DrumKit, sample_rate: f32, open: bool) -> f32 {
     let t = self.age_samples as f32 / sample_rate;
-    let decay = if open { 5.0 } else { 38.0 };
+    let decay = if open { kit.hat_open_decay } else { kit.hat_closed_decay };
     let env = (-t * decay).exp();
-    let metallic =
-      (self.advance_osc(421.0, sample_rate).sin() + self.advance_alt_osc(743.0, sample_rate).sin())
-        * 0.28;
+    let metallic = (self.advance_osc(kit.hat_partial_a, sample_rate).sin()
+      + self.advance_alt_osc(kit.hat_partial_b, sample_rate).sin())
+      * 0.28;
     let hiss = noise(&mut self.noise_state);
 
     (hiss * 0.78 + metallic) * env
   }
 
-  fn render_percussion(&mut self, sample_rate: f32) -> f32 {
+  fn render_percussion(&mut self, kit: &DrumKit, sample_rate: f32) -> f32 {
     let t = self.age_samples as f32 / sample_rate;
-    let env = (-t * 24.0).exp();
+    let env = (-t * kit.percussion_decay).exp();
     let freq = self.frequency.clamp(200.0, 1_800.0);
     self.phase = advance_phase(self.phase, freq, sample_rate);
 
     ((self.phase * TAU).sin() * 0.7 + noise(&mut self.noise_state) * 0.3) * env
   }
 
-  fn render_fx(&mut self, sample_rate: f32) -> f32 {
+  fn render_fx(&mut self, kit: &DrumKit, sample_rate: f32) -> f32 {
     let t = self.age_samples as f32 / sample_rate;
     let env = (-t * 3.5).exp();
-    let sweep = 400.0 + 4_800.0 * (1.0 - (-t * 2.0).exp());
+    let sweep = 400.0 + 4_800.0 * (1.0 - (-t * kit.fx_sweep_rate).exp());
     let raw = noise(&mut self.noise_state) * env;
     self.filter.process(raw, sweep, sample_rate)
   }
@@ -176,7 +229,7 @@ impl Voice {
       sample_rate
     );
     let cutoff = patch.filter_cutoff * if self.accent { 1.35 } else { 1.0 };
-    let filtered = self.filter.process(osc * env, cutoff, sample_rate);
+    let filtered = self.tone_filter.process(osc * env, cutoff, patch.resonance, sample_rate);
 
     saturate(filtered, if self.accent { 1.7 } else { 1.2 })
   }
@@ -263,7 +316,7 @@ fn saturate(input: f32, drive: f32) -> f32 {
 
 #[cfg(test)]
 mod tests {
-  use super::Voice;
+  use super::{DrumKit, Voice};
   use crate::profile::amiga_house_95ish;
   use crate::types::TrackId;
 
@@ -275,7 +328,7 @@ mod tests {
     voice.start(TrackId::Bass, 40, 0.8, 4_800, 48_000.0, true, false);
 
     for _ in 0..256 {
-      let value = voice.render(patch, 48_000.0);
+      let value = voice.render(patch, &DrumKit::classic(), 48_000.0);
       assert!(value.is_finite());
     }
   }
