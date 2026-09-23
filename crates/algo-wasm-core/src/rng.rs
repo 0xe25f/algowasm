@@ -53,6 +53,15 @@ impl Rng64 {
     min + (max - min) * self.next_f32()
   }
 
+  /// Picks one item from a non-empty slice. Returns the default for an empty slice.
+  pub fn pick<T: Copy + Default>(&mut self, items: &[T]) -> T {
+    if items.is_empty() {
+      return T::default();
+    }
+
+    items[self.range_usize(items.len())]
+  }
+
   /// Picks an index from positive integer weights.
   pub fn weighted_index(&mut self, weights: &[u32]) -> usize {
     let total = weights.iter().fold(0u64, |acc, weight| acc + u64::from(*weight));

@@ -3,13 +3,18 @@ use crate::composition::{
 };
 use crate::dsp::{DcBlocker, SoftLimiter, StereoDelay};
 use crate::export::write_midi;
+use crate::genome::SongGenome;
 use crate::profile::{amiga_house_95ish, Patch, Profile, ProfileError};
 use crate::rng::Rng64;
 use crate::synth::{Voice, MAX_VOICES};
 use crate::types::{Mood, MusicEvent, SectionKind, TrackId, TRACK_COUNT};
 use serde::Serialize;
 use std::error::Error;
+use std::f32::consts::TAU;
 use std::fmt::{Display, Formatter};
+
+/// Per-frame smoothing applied to automation, so that moves never click.
+const AUTOMATION_SMOOTHING: f32 = 0.002;
 
 /// Rendering options for offline audio generation.
 #[derive(Clone, Copy, Debug)]
@@ -103,10 +108,13 @@ pub struct Engine {
   section_change_pending: bool,
   playing: bool,
   rng: Rng64,
+  genome: SongGenome,
   pattern_bank: PatternBank,
   previous_bank: Option<PatternBank>,
   voices: [Voice; MAX_VOICES],
+  base_patches: [Patch; TRACK_COUNT],
   patches: [Patch; TRACK_COUNT],
+  automation: Automation,
   track_gain: [f32; TRACK_COUNT],
   track_pan: [f32; TRACK_COUNT],
   muted: [bool; TRACK_COUNT],
@@ -140,15 +148,24 @@ impl Engine {
     }
 
     let mut rng = Rng64::new(seed);
-    let pattern_bank =
-      PatternBank::generate(&mut rng, &profile, None, SectionKind::Intro, 0.5);
-    let patches = patch_array(&profile)?;
+    let genome = SongGenome::generate(seed, &profile);
+    let pattern_bank = PatternBank::generate(
+      &mut rng,
+      &profile,
+      &genome,
+      None,
+      SectionKind::Intro,
+      genome.home_key,
+      0.5
+    );
+    let base_patches = patch_array(&profile)?;
+    let patches = genome.patches(&base_patches);
     let (track_gain, track_pan) = mixer_arrays(&profile)?;
     let mut limiter = SoftLimiter::new(profile.mixer.limiter_drive);
     limiter.set_drive(profile.mixer.limiter_drive);
 
     Ok(Self {
-      bpm: profile.tempo.default_bpm,
+      bpm: genome.bpm(profile.tempo),
       sample_rate: sample_rate as f32,
       seed,
       current_sample: 0,
@@ -159,10 +176,13 @@ impl Engine {
       section_change_pending: true,
       playing: false,
       rng,
+      genome,
       pattern_bank,
       previous_bank: None,
       voices: [Voice::silent(); MAX_VOICES],
+      base_patches,
       patches,
+      automation: Automation::new(),
       track_gain,
       track_pan,
       muted: [false; TRACK_COUNT],
@@ -208,26 +228,36 @@ impl Engine {
     self.voices = [Voice::silent(); MAX_VOICES];
   }
 
-  /// Re-seeds the engine and regenerates material.
+  /// Re-seeds the engine and regenerates the song identity and material.
   pub fn set_seed(&mut self, seed: u64) {
     self.seed = seed;
     self.rng = Rng64::new(seed);
+    self.genome = SongGenome::generate(seed, &self.profile);
+    self.bpm = self.genome.bpm(self.profile.tempo);
+    self.patches = self.genome.patches(&self.base_patches);
+    self.automation = Automation::new();
     self.previous_bank = None;
-    self.pattern_bank =
-      PatternBank::generate(&mut self.rng, &self.profile, None, SectionKind::Intro, self.energy);
+    self.pattern_bank = PatternBank::generate(
+      &mut self.rng,
+      &self.profile,
+      &self.genome,
+      None,
+      SectionKind::Intro,
+      self.genome.home_key,
+      self.energy
+    );
     self.stop();
   }
 
   /// Applies a new profile.
   pub fn set_profile(&mut self, profile: Profile) -> Result<(), EngineError> {
     profile.validate()?;
-    self.patches = patch_array(&profile)?;
+    self.base_patches = patch_array(&profile)?;
     let (gain, pan) = mixer_arrays(&profile)?;
     self.track_gain = gain;
     self.track_pan = pan;
     self.limiter.set_drive(profile.mixer.limiter_drive);
     self.delay = StereoDelay::new(self.sample_rate, profile.mixer.delay_feedback);
-    self.bpm = profile.tempo.default_bpm;
     self.profile = profile;
     self.set_seed(self.seed);
     Ok(())
@@ -253,7 +283,10 @@ impl Engine {
     self.mood = mood;
   }
 
-  /// Sets a valid tempo range and picks the midpoint.
+  /// Sets a valid tempo range and picks the song's tempo inside it.
+  ///
+  /// The song keeps its relative place in the range, so a seed that plays
+  /// near the top of the profile range also plays near the top of the new one.
   pub fn set_tempo_range(&mut self, min_bpm: f32, max_bpm: f32) -> Result<(), EngineError> {
     if min_bpm > max_bpm
       || min_bpm < self.profile.limits.min_bpm
@@ -266,7 +299,7 @@ impl Engine {
 
     self.profile.tempo.min_bpm = min_bpm;
     self.profile.tempo.max_bpm = max_bpm;
-    self.bpm = (min_bpm + max_bpm) * 0.5;
+    self.bpm = self.genome.bpm_in_range(min_bpm, max_bpm);
     Ok(())
   }
 
@@ -297,8 +330,9 @@ impl Engine {
 
     for frame in 0..frames {
       while self.current_sample >= self.next_step_sample {
+        let step = self.step_index;
         self.trigger_step();
-        self.next_step_sample = self.next_step_sample.saturating_add(self.samples_per_step());
+        self.next_step_sample = self.next_step_sample.saturating_add(self.step_duration(step));
       }
 
       let (mut left, mut right) = self.render_frame();
@@ -409,16 +443,17 @@ impl Engine {
       });
     }
 
-    let bar = self.pattern_bank.bars[(self.bar_index as usize) % self.pattern_bank.bars.len()];
-    let chord = self.pattern_bank.chords[(self.bar_index as usize) % self.pattern_bank.chords.len()];
+    let bar = *self.pattern_bank.bar_at(self.section_bar);
+    let chord = self.pattern_bank.chord_at(self.section_bar);
     let step = self.step_index;
+    self.update_automation_targets();
 
     if bar.kick[step] {
       self.start_voice(TrackId::Kick, NoteStep::new(36, 0.92, 2, true, false));
     }
 
-    if bar.snare[step] {
-      self.start_voice(TrackId::Snare, NoteStep::new(38, 0.72, 2, false, false));
+    if bar.snare[step] > 0.0 {
+      self.start_voice(TrackId::Snare, NoteStep::new(38, bar.snare[step], 2, false, false));
     }
 
     if bar.closed_hat[step] > 0.0 {
@@ -454,7 +489,7 @@ impl Engine {
 
   fn start_chord_optional(&mut self, track: TrackId, note: Option<NoteStep>, chord: Chord) {
     if let Some(note) = note {
-      for index in 0..3 {
+      for index in 0..chord.count {
         let tone = chord.tone(index);
         self.start_voice(
           track,
@@ -523,12 +558,15 @@ impl Engine {
         self.energy,
         self.profile.arrangement_rules.reset_chance
       );
+      let key = self.genome.key_for_section(&mut self.rng, &self.profile, next);
       self.previous_bank = Some(self.pattern_bank);
       self.pattern_bank = PatternBank::generate(
         &mut self.rng,
         &self.profile,
+        &self.genome,
         self.previous_bank.as_ref(),
         next,
+        key,
         self.energy
       );
       self.section_bar = 0;
@@ -548,6 +586,9 @@ impl Engine {
       Mood::Calm => 0.9
     };
 
+    self.automation.smooth();
+    let automation = &self.automation;
+
     for voice in &mut self.voices {
       if !voice.active {
         continue;
@@ -555,15 +596,18 @@ impl Engine {
 
       let index = voice.track.as_index();
       let audible = !self.muted[index] && (!any_solo || self.solo[index]);
-      let patch = self.patches[index];
-      let mono = voice.render(patch, self.sample_rate);
+      let mut patch = self.patches[index];
+      patch.filter_cutoff *= automation.cutoff[index];
+      patch.delay_send = (patch.delay_send * automation.send[index]).clamp(0.0, 1.0);
+      patch.reverb_send = (patch.reverb_send * automation.send[index]).clamp(0.0, 1.0);
+      let mono = voice.render(patch, &self.genome.drums, self.sample_rate);
 
       if !audible {
         continue;
       }
 
       let gain = self.track_gain[index] * (0.75 + self.intensity * 0.35) * mood_gain;
-      let pan = (self.track_pan[index] + patch.pan).clamp(-1.0, 1.0);
+      let pan = (self.track_pan[index] + patch.pan + automation.pan[index]).clamp(-1.0, 1.0);
       let (left_gain, right_gain) = pan_gains(pan);
       left += mono * gain * left_gain;
       right += mono * gain * right_gain;
@@ -590,6 +634,99 @@ impl Engine {
     let beats_per_second = self.bpm / 60.0;
     let sixteenths_per_second = beats_per_second * 4.0;
     (self.sample_rate / sixteenths_per_second).max(1.0) as u64
+  }
+
+  /// Returns the time until the step after `step`. Swing lengthens each
+  /// on-beat 16th and shortens the following off-beat 16th by the same amount,
+  /// so bars keep their length.
+  fn step_duration(&self, step: usize) -> u64 {
+    let base = self.samples_per_step() as f32;
+    let swing = self.genome.groove.swing;
+    let duration = if step % 2 == 0 {
+      base * (1.0 + swing)
+    } else {
+      base * (1.0 - swing)
+    };
+
+    (duration.round() as u64).max(1)
+  }
+
+  /// Sets automation targets from section shape, energy, mood, and each
+  /// track's slow seeded LFO. `automationRules` scale every movement.
+  fn update_automation_targets(&mut self) {
+    let rules = self.profile.automation_rules;
+    let bank = &self.pattern_bank;
+    let step = self.step_index as f32;
+    let section_steps = (f32::from(bank.length_bars) * STEPS_PER_BAR as f32).max(1.0);
+    let elapsed = f32::from(self.section_bar) * STEPS_PER_BAR as f32 + step;
+    let progress = (elapsed / section_steps).clamp(0.0, 1.0);
+    let section_curve = match bank.section {
+      SectionKind::Build => -0.9 + 1.5 * progress,
+      SectionKind::Breakdown => -0.8 + 0.4 * progress,
+      SectionKind::Intro => -0.7 + 0.7 * progress,
+      SectionKind::Drop => 0.25,
+      SectionKind::Transition => 0.3 - 0.9 * progress,
+      SectionKind::Reset => -0.6,
+      _ => 0.0
+    } * rules.filter_motion
+      * 2.0;
+    let tilt = (self.energy - 0.5) * 0.6
+      + match self.mood {
+        Mood::Dark => 0.0,
+        Mood::Bright => 0.35,
+        Mood::Tense => 0.15,
+        Mood::Calm => -0.3
+      };
+    let open_space =
+      matches!(bank.section, SectionKind::Breakdown | SectionKind::Transition | SectionKind::Intro);
+    let wet = if open_space {
+      rules.send_motion
+    } else {
+      0.0
+    };
+    let position = self.bar_index as f32 + step / STEPS_PER_BAR as f32;
+
+    for (index, shape) in self.genome.automation.iter().enumerate() {
+      let cycle = position / shape.period_bars + shape.phase;
+      let lfo = (cycle * TAU).sin();
+      let slow = ((cycle * 0.5 + 0.25) * TAU).sin();
+      let octaves = section_curve + tilt + shape.filter_depth * lfo;
+      self.automation.cutoff_target[index] = 2.0_f32.powf(octaves);
+      self.automation.send_target[index] = (1.0 + shape.send_depth * slow + wet).max(0.0);
+      self.automation.pan_target[index] = shape.pan_depth * ((cycle * 0.5 + 0.5) * TAU).sin();
+    }
+  }
+}
+
+/// Smoothed per-track automation values.
+#[derive(Clone, Copy, Debug)]
+struct Automation {
+  cutoff: [f32; TRACK_COUNT],
+  send: [f32; TRACK_COUNT],
+  pan: [f32; TRACK_COUNT],
+  cutoff_target: [f32; TRACK_COUNT],
+  send_target: [f32; TRACK_COUNT],
+  pan_target: [f32; TRACK_COUNT]
+}
+
+impl Automation {
+  const fn new() -> Self {
+    Self {
+      cutoff: [1.0; TRACK_COUNT],
+      send: [1.0; TRACK_COUNT],
+      pan: [0.0; TRACK_COUNT],
+      cutoff_target: [1.0; TRACK_COUNT],
+      send_target: [1.0; TRACK_COUNT],
+      pan_target: [0.0; TRACK_COUNT]
+    }
+  }
+
+  fn smooth(&mut self) {
+    for index in 0..TRACK_COUNT {
+      self.cutoff[index] += (self.cutoff_target[index] - self.cutoff[index]) * AUTOMATION_SMOOTHING;
+      self.send[index] += (self.send_target[index] - self.send[index]) * AUTOMATION_SMOOTHING;
+      self.pan[index] += (self.pan_target[index] - self.pan[index]) * AUTOMATION_SMOOTHING;
+    }
   }
 }
 
@@ -636,8 +773,8 @@ fn safe_sample(value: f32) -> f32 {
 
 #[cfg(test)]
 mod tests {
-  use super::{Engine, RenderOptions};
-  use crate::profile::amiga_house_95ish;
+  use super::{Engine, EngineError, RenderOptions};
+  use crate::profile::{amiga_house_95ish, downtempo_breakbeat, dub_deep_house};
 
   #[test]
   fn render_outputs_finite_audio() {
@@ -680,6 +817,64 @@ mod tests {
     .expect("offline render should work");
 
     assert!(output.iter().any(|sample| sample.abs() > 0.0001));
+  }
+
+  #[test]
+  fn different_seeds_sound_different() -> Result<(), EngineError> {
+    let profile = amiga_house_95ish();
+    let mut tempos = std::collections::HashSet::new();
+    let mut renders = Vec::new();
+
+    for seed in 0..8 {
+      let mut engine = Engine::new(22_050, seed, profile.clone())?;
+      engine.start();
+      let mut output = vec![0.0; 22_050 * 2];
+      engine.render_interleaved(&mut output);
+      tempos.insert(engine.snapshot().bpm as u32);
+      renders.push(output);
+    }
+
+    assert!(tempos.len() >= 3, "tempos: {tempos:?}");
+
+    for left in 0..renders.len() {
+      for right in left + 1..renders.len() {
+        assert_ne!(renders[left], renders[right]);
+      }
+    }
+
+    Ok(())
+  }
+
+  #[test]
+  fn long_renders_stay_bounded_for_every_profile() -> Result<(), EngineError> {
+    for profile in [amiga_house_95ish(), downtempo_breakbeat(), dub_deep_house()] {
+      for (seed, energy) in [(3, 0.1), (11, 0.95)] {
+        let mut engine = Engine::new(22_050, seed, profile.clone())?;
+        engine.set_energy(energy);
+        engine.start();
+        let mut output = vec![0.0; 22_050 * 2 * 20];
+        engine.render_interleaved(&mut output);
+        let power: f32 = output.iter().map(|sample| sample * sample).sum();
+        let rms = (power / output.len() as f32).sqrt();
+
+        assert!(output.iter().all(|sample| sample.is_finite() && sample.abs() <= 1.0));
+        assert!(rms > 0.01 && rms < 0.5, "{} seed {seed} rms {rms}", profile.id);
+      }
+    }
+
+    Ok(())
+  }
+
+  #[test]
+  fn tempo_range_keeps_song_position() -> Result<(), EngineError> {
+    let profile = amiga_house_95ish();
+    let mut engine = Engine::new(48_000, 9, profile)?;
+    let position = engine.genome.tempo_position;
+    assert!(engine.set_tempo_range(100.0, 140.0).is_ok());
+    let expected = (100.0 + 40.0 * position).round();
+
+    assert_eq!(engine.snapshot().bpm, expected);
+    Ok(())
   }
 
   #[test]

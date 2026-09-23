@@ -27,6 +27,74 @@ impl Default for OnePole {
   }
 }
 
+/// A resonant two-pole state-variable low-pass filter.
+///
+/// This uses the trapezoidal (zero-delay feedback) form, which stays stable
+/// while the cutoff moves. Coefficients are cached and only recalculated when
+/// the cutoff or resonance changes noticeably, which keeps `tan` out of the
+/// per-sample hot path for held notes.
+#[derive(Clone, Copy, Debug)]
+pub struct Svf {
+  ic1: f32,
+  ic2: f32,
+  cutoff: f32,
+  resonance: f32,
+  a1: f32,
+  a2: f32,
+  a3: f32
+}
+
+impl Svf {
+  /// Creates a cleared filter.
+  pub const fn new() -> Self {
+    Self {
+      ic1: 0.0,
+      ic2: 0.0,
+      cutoff: -1.0,
+      resonance: -1.0,
+      a1: 0.0,
+      a2: 0.0,
+      a3: 0.0
+    }
+  }
+
+  /// Processes a sample. `resonance` runs from 0 (gentle) to 1 (sharp peak).
+  pub fn process(&mut self, input: f32, cutoff_hz: f32, resonance: f32, sample_rate: f32) -> f32 {
+    let cutoff = cutoff_hz.clamp(20.0, sample_rate * 0.45);
+    let resonance = resonance.clamp(0.0, 1.0);
+
+    if (cutoff - self.cutoff).abs() > self.cutoff * 0.002 || resonance != self.resonance {
+      let g = (std::f32::consts::PI * cutoff / sample_rate).tan();
+      let k = 2.0 - 1.9 * resonance;
+      self.a1 = 1.0 / (1.0 + g * (g + k));
+      self.a2 = g * self.a1;
+      self.a3 = g * self.a2;
+      self.cutoff = cutoff;
+      self.resonance = resonance;
+    }
+
+    let v3 = input - self.ic2;
+    let v1 = self.a1 * self.ic1 + self.a2 * v3;
+    let v2 = self.ic2 + self.a2 * self.ic1 + self.a3 * v3;
+    self.ic1 = denormal_guard(2.0 * v1 - self.ic1);
+    self.ic2 = denormal_guard(2.0 * v2 - self.ic2);
+
+    if v2.is_finite() {
+      v2
+    } else {
+      self.ic1 = 0.0;
+      self.ic2 = 0.0;
+      0.0
+    }
+  }
+}
+
+impl Default for Svf {
+  fn default() -> Self {
+    Self::new()
+  }
+}
+
 /// DC blocking high-pass filter.
 #[derive(Clone, Copy, Debug)]
 pub struct DcBlocker {
@@ -141,7 +209,23 @@ pub fn noise(state: &mut u32) -> f32 {
 
 #[cfg(test)]
 mod tests {
-  use super::SoftLimiter;
+  use super::{SoftLimiter, Svf};
+
+  #[test]
+  fn svf_stays_bounded_at_high_resonance() {
+    let mut filter = Svf::new();
+    let mut peak: f32 = 0.0;
+
+    for index in 0..48_000 {
+      let input = if (index / 60) % 2 == 0 { 1.0 } else { -1.0 };
+      let cutoff = 200.0 + (index as f32 * 0.1) % 8_000.0;
+      let output = filter.process(input, cutoff, 1.0, 48_000.0);
+      assert!(output.is_finite());
+      peak = peak.max(output.abs());
+    }
+
+    assert!(peak < 20.0);
+  }
 
   #[test]
   fn limiter_stays_bounded() {

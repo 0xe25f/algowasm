@@ -45,6 +45,8 @@ Repeated `start()`, `stop()`, and `destroy()` calls are safe.
 - `setMood(mood)`
 - `setTempoRange(minBpm, maxBpm)`
 
+Each seed has its own tempo inside the profile's tempo range. `setTempoRange` keeps the song at the same relative place in the new range, so a seed that plays near the top of the profile range also plays near the top of the new range. Read the current tempo from the snapshot's `bpm`.
+
 Track ids are `kick`, `snare`, `closed_hat`, `open_hat`, `percussion`, `bass`, `chords`, `pad`, `lead`, `arp`, and `fx`.
 
 Moods are `dark`, `bright`, `tense`, and `calm`.

@@ -22,7 +22,16 @@ pub fn write_midi(bank: &PatternBank, bpm: f32) -> Vec<u8> {
     for step in 0..STEPS_PER_BAR {
       let tick = bar_tick + step as u32 * ticks_per_step;
       collect_note(&mut absolute_events, tick, TrackId::Kick, bar.kick[step], 36, 88, ticks_per_step);
-      collect_note(&mut absolute_events, tick, TrackId::Snare, bar.snare[step], 38, 78, ticks_per_step);
+      let snare_velocity = (bar.snare[step] * 108.0) as u8;
+      collect_note(
+        &mut absolute_events,
+        tick,
+        TrackId::Snare,
+        bar.snare[step] > 0.0,
+        38,
+        snare_velocity,
+        ticks_per_step
+      );
 
       if bar.closed_hat[step] > 0.0 {
         absolute_events.push(MidiNote {
@@ -146,6 +155,7 @@ fn write_delta(output: &mut Vec<u8>, value: u32) {
 mod tests {
   use super::write_midi;
   use crate::composition::PatternBank;
+  use crate::genome::SongGenome;
   use crate::profile::amiga_house_95ish;
   use crate::rng::Rng64;
   use crate::types::SectionKind;
@@ -154,7 +164,10 @@ mod tests {
   fn midi_export_has_header() {
     let profile = amiga_house_95ish();
     let mut rng = Rng64::new(1);
-    let bank = PatternBank::generate(&mut rng, &profile, None, SectionKind::Intro, 0.5);
+    let genome = SongGenome::generate(1, &profile);
+    let key = genome.home_key;
+    let section = SectionKind::Intro;
+    let bank = PatternBank::generate(&mut rng, &profile, &genome, None, section, key, 0.5);
     let midi = write_midi(&bank, 126.0);
 
     assert_eq!(&midi[0..4], b"MThd");
