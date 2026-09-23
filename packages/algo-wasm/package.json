@@ -1,6 +1,6 @@
 {
   "name": "@algo-wasm/algo-wasm",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "A WebAssembly-first deterministic algorithmic music engine for modern browsers.",
   "type": "module",
   "repository": { "type": "git", "url": "git+https://github.com/0xe25f/algowasm.git" },

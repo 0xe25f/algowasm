@@ -12,6 +12,6 @@
     "@algo-wasm/algo-wasm": "file:../../packages/algo-wasm"
   },
   "devDependencies": {
-    "vite": "^5.3.4"
+    "vite": "^8.3.0"
   }
 }

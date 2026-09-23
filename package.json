@@ -2,9 +2,14 @@
   "name": "algowasm-workspace",
   "private": true,
   "type": "module",
-  "repository": { "type": "git", "url": "git+https://github.com/0xe25f/algowasm.git" },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/0xe25f/algowasm.git"
+  },
   "homepage": "https://github.com/0xe25f/algowasm#readme",
-  "bugs": { "url": "https://github.com/0xe25f/algowasm/issues" },
+  "bugs": {
+    "url": "https://github.com/0xe25f/algowasm/issues"
+  },
   "workspaces": [
     "packages/algo-wasm",
     "examples/vanilla",
@@ -26,10 +31,10 @@
     "format": "prettier --write ."
   },
   "devDependencies": {
-    "@playwright/test": "^1.45.0",
-    "prettier": "^3.3.3",
-    "typescript": "^5.5.4",
-    "vite": "^5.3.4",
-    "vitest": "^2.0.5"
+    "@playwright/test": "^1.63.0",
+    "prettier": "^3.9.9",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.0",
+    "vitest": "^5.0.1"
   }
 }
