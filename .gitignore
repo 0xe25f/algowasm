@@ -1,12 +1,70 @@
+# Dependencies and package manager caches
 node_modules/
-target/
-dist/
-packages/algo-wasm/dist/
-packages/algo-wasm/pkg/
-examples/*/dist/
-examples/*/public/algo_wasm.wasm
-examples/*/public/algo-worklet.js
-demo/vendor/
+.pnpm-store/
+.npm/
+.pnpm-debug.log*
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Rust build artefacts
+/target/
+**/target/
+*.pdb
+*.rlib
+
+# JavaScript and TypeScript build artefacts
+/dist/
+**/dist/
+**/build/
+*.tsbuildinfo
+.cache/
+.parcel-cache/
+.vite/
+.nyc_output/
+coverage/
+coverage-*/
 playwright-report/
 test-results/
+
+# Package-specific generated outputs
+packages/*/dist/
+packages/*/pkg/
+packages/*/coverage/
+examples/*/dist/
+examples/*/build/
+examples/*/public/*.wasm
+examples/*/public/*.js
+examples/*/public/**/*.wasm
+examples/*/public/**/*.js
+
+# Generated static demo assets for GitHub Pages; rebuilt during deploy
+# and not hand-edited in the repo.
+demo/vendor/
+demo/dist/
+demo/.vite/
+
+# Local runtime and editor metadata
 .DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# Test and tooling caches
+.eslintcache
+.lintstagedrc
+.pytest_cache/
+
+# Miscellaneous generated files
+*.log
+*.tmp
+*.temp
