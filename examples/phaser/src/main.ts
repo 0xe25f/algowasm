@@ -13,7 +13,8 @@ const statusOutput = document.querySelector<HTMLDivElement>('#status');
 const profileFactories = {
   amiga_house_95ish: builtInProfiles.amigaHouse95ish,
   downtempo_breakbeat: builtInProfiles.downtempoBreakbeat,
-  dub_deep_house: builtInProfiles.dubDeepHouse
+  dub_deep_house: builtInProfiles.dubDeepHouse,
+  dubstep: builtInProfiles.dubstep
 } as const;
 
 type ProfileId = keyof typeof profileFactories;

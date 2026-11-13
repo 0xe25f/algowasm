@@ -21,7 +21,8 @@ const seedOutput = document.querySelector('#seed');
 const profileFactories = {
   amiga_house_95ish: builtInProfiles.amigaHouse95ish,
   downtempo_breakbeat: builtInProfiles.downtempoBreakbeat,
-  dub_deep_house: builtInProfiles.dubDeepHouse
+  dub_deep_house: builtInProfiles.dubDeepHouse,
+  dubstep: builtInProfiles.dubstep
 };
 
 for (const [id, factory] of Object.entries(profileFactories)) {
