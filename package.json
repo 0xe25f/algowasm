@@ -17,7 +17,8 @@
     "examples/phaser"
   ],
   "scripts": {
-    "build": "npm run build:wasm && npm run build:ts",
+    "generate:profiles": "node scripts/generate-profiles.mjs",
+    "build": "npm run generate:profiles && npm run build:wasm && npm run build:ts",
     "build:wasm": "node scripts/build-wasm.mjs",
     "build:ts": "node scripts/build-package.mjs",
     "build:demo": "node scripts/build-demo.mjs",
@@ -25,16 +26,17 @@
     "test:package": "node --test test/package/*.test.mjs",
     "test:rust": "cargo test --workspace",
     "test:browser": "playwright test",
-    "lint": "npm run lint:indent && npm run lint:spelling",
+    "lint": "npm run lint:indent && npm run lint:spelling && npm run lint:profiles",
     "lint:indent": "node scripts/check-indentation.mjs",
     "lint:spelling": "node scripts/check-british-english.mjs",
+    "lint:profiles": "node scripts/generate-profiles.mjs --check",
     "format": "prettier --write ."
   },
   "devDependencies": {
     "@playwright/test": "^1.63.0",
+    "binaryen": "^132.0.0",
     "prettier": "^3.9.9",
     "typescript": "^7.0.2",
-    "vite": "^8.3.0",
-    "vitest": "^5.0.1"
+    "vite": "^8.3.0"
   }
 }

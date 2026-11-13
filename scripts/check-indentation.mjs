@@ -61,8 +61,12 @@ for await (const filePath of walk(process.cwd())) {
     }
 
     const leading = line.match(/^ */)?.[0].length ?? 0;
+    // Continuation lines of a block comment start with an asterisk that sits
+    // one space in, under the comment's opening slash. That space aligns the
+    // comment rather than indenting code, so those lines are not counted.
+    const commentContinuation = line.trimStart().startsWith('*');
 
-    if (leading % 2 !== 0) {
+    if (leading % 2 !== 0 && !commentContinuation) {
       failures.push(`${filePath}:${index + 1}: indentation is not a multiple of 2 spaces`);
     }
   });
