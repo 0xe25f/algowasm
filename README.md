@@ -408,35 +408,31 @@ See [docs/api.md](docs/api.md) for more detail.
 
 ## Development
 
+You need Node.js 22 or newer, and Rust with the WASM target:
+
+```sh
+rustup target add wasm32-unknown-unknown
+```
+
+Then build and test everything with three commands:
+
 ```sh
 npm install
-npm run build
 cargo test --workspace
 npm test
 ```
 
-Build scripts:
+`npm test` builds the package first, so there is no separate build step to remember. A successful build prints `Built package JavaScript, declarations, schema, and WASM.` before the tests run.
 
-- `npm run generate:profiles` writes the Rust and TypeScript built-in profiles from the JSON files in `profiles/`.
-- `npm run build:wasm` builds `crates/algo-wasm-ffi` for `wasm32-unknown-unknown` and shrinks the result with `wasm-opt`.
-- `npm run build:ts` cleans `dist`, then writes minified JavaScript bundles, TypeScript declarations, the profile schema, and the WASM binary.
-- `node scripts/copy-example-assets.mjs` copies WASM and worklet files into example `public/` folders.
+Run `npm install` again after pulling changes, in case the development dependencies have changed.
 
-## Testing
+Other commands:
 
-The package and browser tests run against the built package, so install and build first:
-
-```sh
-npm install
-npm run build
-cargo test --workspace
-npm test
-npm run test:browser
-```
-
-Run `npm install` again after pulling changes. The build needs every development dependency, including `wasm-opt` from `binaryen`.
-
-Browser tests use Playwright and run from an HTTP server so fetch, MIME types, modules, and AudioWorklet behave like production.
+- `npm run build` builds without testing. It writes the package to `packages/algo-wasm/dist`.
+- `npm run build:demo` copies the built package into `demo/vendor` for the demo site.
+- `npm run test:browser` runs the Playwright browser tests. Run `npx playwright install` once first. They use an HTTP server so fetch, MIME types, modules, and AudioWorklet behave like production.
+- `npm run lint` checks indentation, spelling, and that the generated profile files are up to date.
+- `npm run generate:profiles` rewrites the Rust and TypeScript built-in profiles from the JSON files in `profiles/`. `npm run build` does this for you.
 
 ## Release
 

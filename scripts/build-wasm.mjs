@@ -1,5 +1,5 @@
 // Builds the release WASM binary and shrinks it with wasm-opt.
-import { mkdirSync, rmSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync, statSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 
@@ -24,8 +24,8 @@ function run(command, args) {
   if (result.error) {
     console.error(
       `Could not run ${path.basename(command)}: ${result.error.message}\n` +
-        'Run "npm install" first. wasm-opt comes from the binaryen development dependency, ' +
-        'and cargo comes from a Rust toolchain with the wasm32-unknown-unknown target.'
+        'cargo comes from a Rust toolchain. Install one from https://rustup.rs and run ' +
+        '"rustup target add wasm32-unknown-unknown".'
     );
     process.exit(1);
   }
@@ -47,11 +47,24 @@ mkdirSync(packageDir, { recursive: true });
 // Size-focused settings live in the workspace's [profile.release].
 run('cargo', ['build', '-p', 'algo-wasm-ffi', '--target', 'wasm32-unknown-unknown', '--release']);
 
-// wasm-opt comes from the binaryen development dependency. -Os keeps the
-// audio loops fast, and the strip flags remove metadata the engine never
-// reads. The enabled features are the ones current Rust emits for this
-// target; every browser from 2025 onwards supports them.
-run(path.resolve('node_modules/.bin/wasm-opt'), [
+// wasm-opt comes from the binaryen development dependency and is itself a
+// Node.js program. It is run through the current Node.js binary by its real
+// path, so the build does not rely on the node_modules/.bin links or on the
+// script being executable, neither of which every file system provides.
+// -Os keeps the audio loops fast, and the strip flags remove metadata the
+// engine never reads. The enabled features are the ones current Rust emits
+// for this target; every browser from 2025 onwards supports them.
+const wasmOpt = path.resolve('node_modules/binaryen/bin/wasm-opt');
+
+if (!existsSync(wasmOpt)) {
+  console.error(
+    'wasm-opt is not installed. Run "npm install" in the repository root, then build again.'
+  );
+  process.exit(1);
+}
+
+run(process.execPath, [
+  wasmOpt,
   source,
   '-Os',
   '--enable-bulk-memory',
