@@ -4,11 +4,13 @@ AlgoWASM is a WebAssembly-first deterministic algorithmic music engine for moder
 
 It includes:
 
-- `dist/index.js`: ESM TypeScript SDK output.
+- `dist/index.js`: the SDK as one minified ES module.
 - `dist/index.d.ts`: public TypeScript declarations.
 - `dist/algo_wasm.wasm`: Rust engine compiled to WebAssembly.
-- `dist/worklet/algo-worklet.js`: AudioWorklet processor.
-- `dist/profile-schema.json`: JSON schema for profiles.
+- `dist/worklet/algo-worklet.js`: the AudioWorklet processor as one self-contained minified file.
+- `dist/profile-schema.json`: JSON schema for profiles, generated from the validator's own field table.
+
+The package has no runtime dependencies.
 
 See the repository README for full integration notes, examples, browser deployment notes, and development commands.
 

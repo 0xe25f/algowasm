@@ -13,13 +13,14 @@ synth engine in `crates/algo-wasm-core`.
 
 ## Built-In Profiles
 
-AlgoWASM ships three built-in profiles through `builtInProfiles`:
+AlgoWASM ships four built-in profiles through `builtInProfiles`:
 
 | Profile | `id` | Tempo | Character |
 | --- | --- | --- | --- |
 | `builtInProfiles.amigaHouse95ish()` | `amiga_house_95ish` | 118 to 138 BPM | The default mid-1990s Amiga-inspired house profile. Four-on-the-floor kick, syncopated hats, acid-leaning saw bass, bright pulse stabs. |
 | `builtInProfiles.downtempoBreakbeat()` | `downtempo_breakbeat` | 88 to 112 BPM | A slower, broken-beat profile. Lower kick density, more percussion, and a high fill chance for frequent snare rolls. Same chord grammar as the default profile. |
 | `builtInProfiles.dubDeepHouse()` | `dub_deep_house` | 118 to 124 BPM | A roomier, more hypnotic profile. Longer sections, sparser percussion, a round sine or triangle bass instead of a bright saw, and heavier delay and reverb sends. |
+| `builtInProfiles.dubstep()` | `dubstep` | 138 to 146 BPM | A half-time, sub-led profile. Snare on beat three, a long sustained sine bass, sparse mids, and a pad that wobbles in time with the beat. |
 
 `examples/vanilla`, `examples/react`, and `examples/phaser` all include a Profile dropdown that populates its option labels from each profile's own `displayName` and calls `setProfile()` live while a track plays.
 
@@ -42,12 +43,12 @@ await player.start();
 - `tempo`: `minBpm`, `maxBpm`, and `defaultBpm`. Must sit inside the profile's own `limits.minBpm` and `limits.maxBpm`. Each seed picks its own tempo inside `minBpm` to `maxBpm`, leaning towards `defaultBpm`.
 - `scales`: a weighted list of scale names. At least one scale is required. Higher weight means the scale is picked more often.
 - `chordRules`: `cadenceWeight` and `movementWeight` shape progression scoring. `suspendedChance` and `brightBorrowChance` control how often suspended and borrowed major chords appear.
-- `rhythmRules`: `kickDensity`, `hatDensity`, and `percussionDensity` control how often each drum fires on its seeded grid positions. A `kickDensity` of 1 keeps a four-on-the-floor kick, and lower values pick a broken kick pattern. `fillChance` controls how often the final bar of a section rolls into a fill.
-- `bassRules`: `density`, `slideChance`, `accentChance`, and `octaveJumpChance` shape the monophonic bassline.
+- `rhythmRules`: `kickDensity`, `hatDensity`, and `percussionDensity` control how often each drum fires on its seeded grid positions. A `kickDensity` of 1 keeps a four-on-the-floor kick, and lower values pick a broken kick pattern. `fillChance` controls how often the final bar of a section rolls into a fill. The optional `halfTimeChance` (default 0.3) is the chance that a broken-beat song puts its snare on beat three only.
+- `bassRules`: `density`, `slideChance`, `accentChance`, and `octaveJumpChance` shape the monophonic bassline. The optional `sustainChance` (default 0) is the chance that a song holds each bass note until the next one starts.
 - `melodyRules`: `density`, `mutationChance`, `callResponseChance`, and `maxRangeSemitones` shape lead motifs.
 - `arrangementRules`: `minSectionBars` and `maxSectionBars` bound section length. `futureBars` controls how many bars stay queued ahead of playback. `resetChance` controls how often the arrangement returns to a fresh section instead of continuing to build.
 - `automationRules`: `filterMotion`, `sendMotion`, and `panMotion` scale slow automation movement.
-- `patches`: one entry per built-in track (`kick`, `snare`, `closed_hat`, `open_hat`, `percussion`, `bass`, `chords`, `pad`, `lead`, `arp`, `fx`). Each patch sets `wave`, `gain`, `pan`, envelope timings, `filterCutoff`, `resonance`, `delaySend`, and `reverbSend`.
+- `patches`: one entry per built-in track (`kick`, `snare`, `closed_hat`, `open_hat`, `percussion`, `bass`, `chords`, `pad`, `lead`, `arp`, `fx`). Each patch sets `wave`, `gain`, `pan`, envelope timings, `filterCutoff`, `resonance`, `delaySend`, and `reverbSend`. See [Optional patch fields](#optional-patch-fields) for the rest.
 - `mixer`: `masterGain`, `limiterDrive`, `delayFeedback`, `reverbMix`, and one gain and pan entry per track.
 - `limits`: safety bounds for sample rate, tempo, track count, voice count, queued bars, and events per block. Profile fields are validated against these limits, not against fixed global constants.
 
@@ -59,6 +60,28 @@ The `patches` and `mixer` fields decide *how it sounds*: oscillator shape, envel
 
 The seed changes the sound as well. Each seed applies moderate changes to the tonal patches (cutoff, resonance, envelope, sends, and sometimes a wave swap within the same family) and picks its own drum kit tuning. A profile sets the character, and the seed sets the song. See [algorithms.md](algorithms.md#song-identity).
 
+### Optional patch fields
+
+These fields were added in 1.2.0. Leave them out and a patch behaves as it did before.
+
+| Field | Range | Default | Effect |
+| --- | --- | --- | --- |
+| `detuneCents` | 0 to 50 | 0 | Adds a second oscillator this many cents sharp, which thickens the sound. |
+| `filterEnvOctaves` | 0 to 6 | 0 | Opens the filter this many octaves at note start. |
+| `filterEnvDecayMs` | 1 to 10000 | 120 | Time the filter takes to close again. |
+| `lfoRate` | 0 to 8 | 0 | Filter wobble rate in cycles per beat, locked to the song tempo. |
+| `lfoDepth` | 0 to 4 | 0 | Filter wobble depth in octaves. |
+| `width` | 0 to 1 | 0 | Spreads the track's notes across the stereo field. |
+| `duck` | 0 to 1 | 0 | How much each kick drum pulls this track's level down. |
+
+The drum tracks (`kick`, `snare`, `closed_hat`, `open_hat`, `percussion`, and `fx`) use `width` and `duck` only.
+
+### Effects
+
+- `delaySend` feeds a stereo ping-pong delay. Its time is a dotted eighth note at the song tempo, so echoes land on the beat. `mixer.delayFeedback` sets how long they repeat.
+- `reverbSend` feeds a small stereo reverb. `mixer.reverbMix` sets its level.
+- `mixer.limiterDrive` is the gain into the master limiter. The limiter leaves the mix untouched below its ceiling, just under full scale, and holds peaks at that ceiling.
+
 ### Resonance
 
 Tonal tracks (`bass`, `chords`, `pad`, `lead`, and `arp`) run through a resonant state-variable low-pass filter. `resonance` runs from 0, a gentle slope, to 1, a sharp peak. Higher values give the squelchy acid bass sound, especially while `automationRules.filterMotion` sweeps the cutoff.
@@ -68,10 +91,11 @@ Tonal tracks (`bass`, `chords`, `pad`, `lead`, and `arp`) run through a resonant
 - Want the original house sound: `builtInProfiles.amigaHouse95ish()`.
 - Want a slower, broken-beat groove: `builtInProfiles.downtempoBreakbeat()`.
 - Want a roomy, hypnotic deep house or dub sound: `builtInProfiles.dubDeepHouse()`.
+- Want a heavy, half-time sub bass sound: `builtInProfiles.dubstep()`.
 
 ## Building A Custom Profile
 
-Clone a built-in profile and adjust fields, or author a full object that matches [`profile-schema.json`](../packages/algo-wasm/src/profile-schema.json):
+Clone a built-in profile and adjust fields, or author a full object that matches `profile-schema.json`. The build generates that schema into `packages/algo-wasm/dist` from the same field table the validator uses, and the package exports it as `@algo-wasm/algo-wasm/profile-schema`:
 
 ```ts
 import { builtInProfiles, validateProfile } from '@algo-wasm/algo-wasm';
@@ -87,25 +111,33 @@ const validated = validateProfile(profile);
 
 `validateProfile()` throws an `AlgoWasmError` with code `profile_invalid` and a specific British English message if any field is missing, out of range, or inconsistent. Validation runs before the profile ever reaches WASM.
 
-When adding a new built-in profile to the library itself, mirror the same profile in both places so Rust and TypeScript consumers stay in sync:
+When adding a new built-in profile to the library itself:
 
-- `crates/algo-wasm-core/src/profile.rs`: add a `pub fn` returning a `Profile`, plus dedicated patch and mixer helper functions.
-- `packages/algo-wasm/src/profile.ts`: add a matching `AlgoWasmProfile` constant and register it on `builtInProfiles`.
+1. Add one JSON file to `profiles/`, named after the profile `id` with hyphens, for example `profiles/dub-deep-house.json`.
+2. Run `npm run generate:profiles`. This writes the Rust and TypeScript copies, so the two can never disagree. Do not edit the generated files by hand.
+3. Register the profile on `builtInProfiles` in `packages/algo-wasm/src/profile.ts`.
 
-Add a Rust `#[test]` that calls `.validate()` on the new profile, and a package test that renders a short buffer through the compiled WASM and asserts the output is finite and non-silent. This catches unsafe envelope, filter, or gain values before release.
+The existing tests then cover it: the Rust test validates every built-in profile, and the package test renders each one through the compiled WASM and checks the output is finite and non-silent. `npm run lint` fails if the generated files are out of date.
 
 ## Validation And Safety
 
 Profile validation enforces:
 
 - non-empty `id`, `displayName`, and `version`;
-- at least one scale with a positive integer weight;
+- between one and eight scales, each with a known name and a whole-number weight from 1 to 1,000,000;
 - an ordered tempo range that sits inside the profile's own safety limits and within 40 to 240 BPM overall;
 - every unit-range field (chances, densities, sustain, sends) between 0 and 1;
 - every gain field between 0 and 2, every pan field between -1 and 1;
-- filter cutoff between 20 and 20,000 Hz;
+- filter cutoff between 20 and 20,000 Hz, and envelope times up to 10,000 ms;
+- `chordRules.cadenceWeight` and `movementWeight` between 0 and 4;
+- `melodyRules.maxRangeSemitones` a whole number from 1 to 48;
+- `limits.maxEventsPerBlock` a whole number from 1 to 512, `limits.maxVoices` from 1 to 64, and `limits.maxTracks` exactly 11;
 - exactly one patch and one mixer entry per built-in track;
 - sample rate limits between 22,050 and 96,000 Hz;
 - arrangement `futureBars` no larger than `limits.maxBarsQueued`.
 
-A profile that fails any of these checks is rejected with a clear error before it reaches the render path, so invalid profiles cannot produce NaN, infinite, or runaway audio output.
+Scale names are `natural_minor`, `dorian`, `aeolian`, `phrygian_dominant`, and `minor_pentatonic`. An unknown name is an error. Earlier releases quietly played natural minor instead.
+
+`limits.maxVoices` is honoured: the engine never sounds more voices than this, up to its own pool of 48.
+
+The engine repeats these checks inside WASM as a second line of defence. A profile that fails any of these checks is rejected with a clear error before it reaches the render path, so invalid profiles cannot produce NaN, infinite, or runaway audio output.

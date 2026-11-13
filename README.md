@@ -285,6 +285,7 @@ Profiles are JSON-compatible style definitions. They include tempo, scales, chor
 - `builtInProfiles.amigaHouse95ish()`: the default mid-1990s Amiga-inspired house profile, 118 to 138 BPM.
 - `builtInProfiles.downtempoBreakbeat()`: a slower, broken-beat profile, 88 to 112 BPM.
 - `builtInProfiles.dubDeepHouse()`: a roomier, more hypnotic dub and deep house profile, 118 to 124 BPM.
+- `builtInProfiles.dubstep()`: a half-time, sub-led dubstep profile, 138 to 146 BPM.
 
 ```ts
 import { builtInProfiles, validateProfile } from '@algo-wasm/algo-wasm';
@@ -323,7 +324,7 @@ player.setMuted('lead', true);
 player.setSolo('bass', false);
 ```
 
-Live numeric controls are clamped to safe ranges. Profile changes are validated.
+Live numeric controls are clamped to safe ranges. Profile changes are validated. An unknown mood or track id, or a tempo range that is not finite and ordered, throws straight away.
 
 ## Offline Rendering
 
@@ -335,7 +336,7 @@ const audio = await player.renderOffline({
 });
 ```
 
-The result is interleaved stereo `Float32Array` data.
+The result is interleaved stereo `Float32Array` data. The render uses the player's current volume, energy, intensity, mood, mutes, and solos, accepts up to 600 seconds, and yields to the page as it runs.
 
 ## MIDI Export
 
@@ -344,14 +345,15 @@ const midi = await player.exportMidi();
 const blob = new Blob([midi], { type: 'audio/midi' });
 ```
 
-The exporter writes the current generated phrase as a compact type-0 MIDI file.
+The exporter writes the current generated phrase as a compact type-0 MIDI file. Pass `{ downloadName: 'phrase.mid' }` to also offer it as a download.
 
 ## Performance Notes
 
 - Real-time rendering uses a fixed voice pool.
-- The AudioWorklet render path avoids JSON parsing and logging.
+- The AudioWorklet render path parses no text, does no logging, and allocates nothing inside WASM.
 - The first version does not require `SharedArrayBuffer`.
-- The WASM binary size is tracked by the build output.
+- The WASM binary is about 103 KB (47 KB gzipped). A package test fails if it or the JavaScript bundles outgrow their size budgets.
+- The engine and the published package have no runtime dependencies.
 - The engine clamps gains, feedback, tempo, and sample rates.
 
 ## Troubleshooting
@@ -415,8 +417,9 @@ npm test
 
 Build scripts:
 
-- `npm run build:wasm` builds `crates/algo-wasm-ffi` for `wasm32-unknown-unknown`.
-- `npm run build:ts` compiles the TypeScript package and copies assets.
+- `npm run generate:profiles` writes the Rust and TypeScript built-in profiles from the JSON files in `profiles/`.
+- `npm run build:wasm` builds `crates/algo-wasm-ffi` for `wasm32-unknown-unknown` and shrinks the result with `wasm-opt`.
+- `npm run build:ts` cleans `dist`, then writes minified JavaScript bundles, TypeScript declarations, the profile schema, and the WASM binary.
 - `node scripts/copy-example-assets.mjs` copies WASM and worklet files into example `public/` folders.
 
 ## Testing
@@ -434,7 +437,7 @@ Browser tests use Playwright and run from an HTTP server so fetch, MIME types, m
 1. Run all tests.
 2. Run `npm run build`.
 3. Check `packages/algo-wasm/dist`.
-4. Confirm package contents include JavaScript, declarations, WASM, worklet, README, and licence.
+4. Confirm package contents include JavaScript, declarations, WASM, worklet, README, and licence, and no source maps. `npm pack --dry-run` in `packages/algo-wasm` lists them.
 5. Publish from `packages/algo-wasm`.
 
 ## Licence
