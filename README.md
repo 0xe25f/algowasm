@@ -424,11 +424,17 @@ Build scripts:
 
 ## Testing
 
+The package and browser tests run against the built package, so install and build first:
+
 ```sh
+npm install
+npm run build
 cargo test --workspace
 npm test
 npm run test:browser
 ```
+
+Run `npm install` again after pulling changes. The build needs every development dependency, including `wasm-opt` from `binaryen`.
 
 Browser tests use Playwright and run from an HTTP server so fetch, MIME types, modules, and AudioWorklet behave like production.
 

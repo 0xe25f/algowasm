@@ -1,13 +1,16 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
-import {
-  AlgoWasmEngineBinding,
-  AlgoWasmError,
-  builtInProfiles,
-  normaliseSeed,
-  validateProfile
-} from '../../packages/algo-wasm/dist/index.js';
+import { existsSync } from 'node:fs';
+
+// These tests exercise the built package, so it must exist first. Checking
+// here gives a clear instruction instead of a module resolution stack trace.
+if (!existsSync(new URL('../../packages/algo-wasm/dist/index.js', import.meta.url))) {
+  throw new Error('The package has not been built. Run "npm install" and "npm run build" first.');
+}
+
+const { AlgoWasmEngineBinding, AlgoWasmError, builtInProfiles, normaliseSeed, validateProfile } =
+  await import('../../packages/algo-wasm/dist/index.js');
 
 test('built-in profile validates and is cloned', () => {
   const profile = builtInProfiles.amigaHouse95ish();

@@ -19,6 +19,17 @@ const env = {
 function run(command, args) {
   const result = spawnSync(command, args, { stdio: 'inherit', shell: false, env });
 
+  // A command that could not be started at all has no exit status and prints
+  // nothing itself, so say what is missing instead of failing silently.
+  if (result.error) {
+    console.error(
+      `Could not run ${path.basename(command)}: ${result.error.message}\n` +
+        'Run "npm install" first. wasm-opt comes from the binaryen development dependency, ' +
+        'and cargo comes from a Rust toolchain with the wasm32-unknown-unknown target.'
+    );
+    process.exit(1);
+  }
+
   if (result.status !== 0) {
     process.exit(result.status ?? 1);
   }
