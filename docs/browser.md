@@ -25,3 +25,7 @@ Strict Content Security Policy can block WebAssembly compilation or worklet load
 ## SharedArrayBuffer
 
 SharedArrayBuffer is not required in this version. Future versions may add it as an optional transport with COOP and COEP documentation.
+
+## Loading details
+
+AlgoWASM uses `WebAssembly.instantiateStreaming()` when possible. If the server uses the wrong MIME type during local testing, the loader falls back to `fetch()`, `arrayBuffer()`, and `WebAssembly.instantiate()`.

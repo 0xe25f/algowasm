@@ -12,7 +12,7 @@ It includes:
 
 The package has no runtime dependencies.
 
-See the repository README for full integration notes, examples, browser deployment notes, and development commands.
+See the [getting started guide](https://github.com/0xe25f/algowasm/blob/main/docs/getting-started.md) for integration steps, and the [live demo](https://0xe25f.github.io/algowasm/) to hear it.
 
 ## Quick Start
 
