@@ -1,11 +1,8 @@
-use serde::{Deserialize, Serialize};
-
 /// Stable track count used by the built-in mixer and FFI boundary.
 pub const TRACK_COUNT: usize = 11;
 
 /// Stable public track identifiers.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum TrackId {
   Kick,
   Snare,
@@ -70,28 +67,14 @@ impl TrackId {
     }
   }
 
-  /// Parses a public track identifier.
-  pub fn from_id(value: &str) -> Option<Self> {
-    match value {
-      "kick" => Some(TrackId::Kick),
-      "snare" => Some(TrackId::Snare),
-      "closed_hat" => Some(TrackId::ClosedHat),
-      "open_hat" => Some(TrackId::OpenHat),
-      "percussion" => Some(TrackId::Percussion),
-      "bass" => Some(TrackId::Bass),
-      "chords" => Some(TrackId::Chords),
-      "pad" => Some(TrackId::Pad),
-      "lead" => Some(TrackId::Lead),
-      "arp" => Some(TrackId::Arp),
-      "fx" => Some(TrackId::Fx),
-      _ => None
-    }
+  /// Returns the track for a compact mixer index, as used on the WASM boundary.
+  pub fn from_index(index: usize) -> Option<Self> {
+    Self::ALL.get(index).copied()
   }
 }
 
 /// Sections used by the rolling endless arrangement.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum SectionKind {
   Intro,
   GrooveA,
@@ -106,6 +89,22 @@ pub enum SectionKind {
 }
 
 impl SectionKind {
+  /// Returns the stable numeric identifier used on the WASM boundary.
+  pub const fn as_index(self) -> u8 {
+    match self {
+      SectionKind::Intro => 0,
+      SectionKind::GrooveA => 1,
+      SectionKind::GrooveB => 2,
+      SectionKind::Build => 3,
+      SectionKind::Drop => 4,
+      SectionKind::Variation => 5,
+      SectionKind::Breakdown => 6,
+      SectionKind::Fill => 7,
+      SectionKind::Transition => 8,
+      SectionKind::Reset => 9
+    }
+  }
+
   /// Returns the public string identifier.
   pub const fn as_str(self) -> &'static str {
     match self {
@@ -124,8 +123,7 @@ impl SectionKind {
 }
 
 /// Live mood control exposed to frontends.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum Mood {
   Dark,
   Bright,
@@ -134,21 +132,20 @@ pub enum Mood {
 }
 
 impl Mood {
-  /// Parses a public mood identifier.
-  pub fn from_id(value: &str) -> Option<Self> {
-    match value {
-      "dark" => Some(Mood::Dark),
-      "bright" => Some(Mood::Bright),
-      "tense" => Some(Mood::Tense),
-      "calm" => Some(Mood::Calm),
+  /// Returns the mood for its numeric identifier on the WASM boundary.
+  pub const fn from_index(index: u32) -> Option<Self> {
+    match index {
+      0 => Some(Mood::Dark),
+      1 => Some(Mood::Bright),
+      2 => Some(Mood::Tense),
+      3 => Some(Mood::Calm),
       _ => None
     }
   }
 }
 
 /// Oscillator shape used by procedural patches.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum WaveShape {
   Sine,
   Triangle,
@@ -158,26 +155,32 @@ pub enum WaveShape {
   Noise
 }
 
+impl WaveShape {
+  /// Returns the wave shape for its numeric identifier on the WASM boundary.
+  pub const fn from_index(index: u32) -> Option<Self> {
+    match index {
+      0 => Some(WaveShape::Sine),
+      1 => Some(WaveShape::Triangle),
+      2 => Some(WaveShape::Saw),
+      3 => Some(WaveShape::Square),
+      4 => Some(WaveShape::Pulse),
+      5 => Some(WaveShape::Noise),
+      _ => None
+    }
+  }
+}
+
+/// Number of `f64` values each event occupies in the binary event buffer.
+pub const EVENT_WIRE_SIZE: usize = 5;
+
 /// A compact event emitted by the deterministic scheduler.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
-#[serde(tag = "type", rename_all = "kebab-case")]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum MusicEvent {
   NoteOn {
     sample: u64,
     track: TrackId,
     note: i16,
     velocity: f32
-  },
-  NoteOff {
-    sample: u64,
-    track: TrackId,
-    note: i16
-  },
-  Control {
-    sample: u64,
-    track: TrackId,
-    name: &'static str,
-    value: f32
   },
   SectionChange {
     sample: u64,
@@ -192,5 +195,38 @@ pub enum MusicEvent {
     sample: u64,
     bar: u64,
     beat: u8
+  }
+}
+
+impl MusicEvent {
+  /// Encodes the event as `[kind, sample, a, b, c]`.
+  ///
+  /// The kinds are 0 for note-on (track, note, velocity), 3 for section
+  /// change (section, bar), 4 for bar (bar), and 5 for beat (bar, beat).
+  /// Kinds 1 and 2 are reserved for note-off and control events. JavaScript
+  /// decodes this layout, so it must stay in step with the package's decoder.
+  pub fn to_wire(self) -> [f64; EVENT_WIRE_SIZE] {
+    match self {
+      MusicEvent::NoteOn {
+        sample,
+        track,
+        note,
+        velocity
+      } => [0.0, sample as f64, track.as_index() as f64, f64::from(note), f64::from(velocity)],
+      MusicEvent::SectionChange {
+        sample,
+        section,
+        bar
+      } => [3.0, sample as f64, f64::from(section.as_index()), bar as f64, 0.0],
+      MusicEvent::Bar {
+        sample,
+        bar
+      } => [4.0, sample as f64, bar as f64, 0.0, 0.0],
+      MusicEvent::Beat {
+        sample,
+        bar,
+        beat
+      } => [5.0, sample as f64, bar as f64, f64::from(beat), 0.0]
+    }
   }
 }

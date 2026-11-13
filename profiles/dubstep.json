@@ -1,0 +1,314 @@
+{
+  "id": "dubstep",
+  "displayName": "Dubstep",
+  "version": "0.1.0",
+  "tempo": {
+    "minBpm": 138,
+    "maxBpm": 146,
+    "defaultBpm": 140
+  },
+  "scales": [
+    {
+      "name": "natural_minor",
+      "weight": 40
+    },
+    {
+      "name": "phrygian_dominant",
+      "weight": 25
+    },
+    {
+      "name": "minor_pentatonic",
+      "weight": 20
+    },
+    {
+      "name": "aeolian",
+      "weight": 15
+    }
+  ],
+  "chordRules": {
+    "cadenceWeight": 0.8,
+    "movementWeight": 0.35,
+    "suspendedChance": 0.12,
+    "brightBorrowChance": 0.04
+  },
+  "rhythmRules": {
+    "kickDensity": 0.7,
+    "hatDensity": 0.55,
+    "percussionDensity": 0.12,
+    "fillChance": 0.35,
+    "halfTimeChance": 1
+  },
+  "bassRules": {
+    "density": 0.25,
+    "slideChance": 0.3,
+    "accentChance": 0.3,
+    "octaveJumpChance": 0.05,
+    "sustainChance": 1
+  },
+  "melodyRules": {
+    "density": 0.18,
+    "mutationChance": 0.2,
+    "callResponseChance": 0.5,
+    "maxRangeSemitones": 12
+  },
+  "arrangementRules": {
+    "minSectionBars": 8,
+    "maxSectionBars": 16,
+    "futureBars": 8,
+    "resetChance": 0.05
+  },
+  "automationRules": {
+    "filterMotion": 0.5,
+    "sendMotion": 0.3,
+    "panMotion": 0.2
+  },
+  "patches": [
+    {
+      "track": "kick",
+      "wave": "sine",
+      "gain": 1,
+      "pan": 0,
+      "attackMs": 0,
+      "decayMs": 120,
+      "sustain": 0,
+      "releaseMs": 10,
+      "filterCutoff": 120,
+      "resonance": 0.1,
+      "delaySend": 0,
+      "reverbSend": 0
+    },
+    {
+      "track": "snare",
+      "wave": "noise",
+      "gain": 0.88,
+      "pan": 0,
+      "attackMs": 0,
+      "decayMs": 110,
+      "sustain": 0,
+      "releaseMs": 40,
+      "filterCutoff": 5000,
+      "resonance": 0.2,
+      "delaySend": 0.04,
+      "reverbSend": 0.3
+    },
+    {
+      "track": "closed_hat",
+      "wave": "noise",
+      "gain": 0.4,
+      "pan": 0.1,
+      "attackMs": 0,
+      "decayMs": 35,
+      "sustain": 0,
+      "releaseMs": 10,
+      "filterCutoff": 9000,
+      "resonance": 0.2,
+      "delaySend": 0.05,
+      "reverbSend": 0.06,
+      "width": 0.5
+    },
+    {
+      "track": "open_hat",
+      "wave": "noise",
+      "gain": 0.3,
+      "pan": 0.2,
+      "attackMs": 0,
+      "decayMs": 240,
+      "sustain": 0,
+      "releaseMs": 50,
+      "filterCutoff": 8500,
+      "resonance": 0.2,
+      "delaySend": 0.1,
+      "reverbSend": 0.12,
+      "width": 0.5
+    },
+    {
+      "track": "percussion",
+      "wave": "triangle",
+      "gain": 0.3,
+      "pan": -0.2,
+      "attackMs": 1,
+      "decayMs": 80,
+      "sustain": 0,
+      "releaseMs": 20,
+      "filterCutoff": 2800,
+      "resonance": 0.3,
+      "delaySend": 0.18,
+      "reverbSend": 0.2,
+      "width": 0.7
+    },
+    {
+      "track": "bass",
+      "wave": "sine",
+      "gain": 0.95,
+      "pan": 0,
+      "attackMs": 8,
+      "decayMs": 260,
+      "sustain": 0.85,
+      "releaseMs": 140,
+      "filterCutoff": 420,
+      "resonance": 0.2,
+      "delaySend": 0,
+      "reverbSend": 0,
+      "duck": 0.55
+    },
+    {
+      "track": "chords",
+      "wave": "saw",
+      "gain": 0.3,
+      "pan": -0.1,
+      "attackMs": 4,
+      "decayMs": 160,
+      "sustain": 0.2,
+      "releaseMs": 140,
+      "filterCutoff": 700,
+      "resonance": 0.5,
+      "delaySend": 0.3,
+      "reverbSend": 0.25,
+      "detuneCents": 12,
+      "filterEnvOctaves": 2.2,
+      "filterEnvDecayMs": 160,
+      "width": 0.7,
+      "duck": 0.3
+    },
+    {
+      "track": "pad",
+      "wave": "saw",
+      "gain": 0.4,
+      "pan": 0,
+      "attackMs": 30,
+      "decayMs": 600,
+      "sustain": 0.8,
+      "releaseMs": 260,
+      "filterCutoff": 320,
+      "resonance": 0.55,
+      "delaySend": 0.06,
+      "reverbSend": 0.2,
+      "detuneCents": 16,
+      "lfoRate": 2,
+      "lfoDepth": 1.9,
+      "width": 0.6,
+      "duck": 0.5
+    },
+    {
+      "track": "lead",
+      "wave": "square",
+      "gain": 0.31,
+      "pan": 0.1,
+      "attackMs": 6,
+      "decayMs": 150,
+      "sustain": 0.2,
+      "releaseMs": 160,
+      "filterCutoff": 1700,
+      "resonance": 0.35,
+      "delaySend": 0.34,
+      "reverbSend": 0.3,
+      "detuneCents": 8,
+      "filterEnvOctaves": 1.2,
+      "filterEnvDecayMs": 200,
+      "duck": 0.2
+    },
+    {
+      "track": "arp",
+      "wave": "pulse",
+      "gain": 0.2,
+      "pan": 0.18,
+      "attackMs": 2,
+      "decayMs": 70,
+      "sustain": 0.1,
+      "releaseMs": 60,
+      "filterCutoff": 2600,
+      "resonance": 0.3,
+      "delaySend": 0.3,
+      "reverbSend": 0.22,
+      "width": 0.8,
+      "duck": 0.2
+    },
+    {
+      "track": "fx",
+      "wave": "noise",
+      "gain": 0.94,
+      "pan": 0,
+      "attackMs": 0,
+      "decayMs": 600,
+      "sustain": 0,
+      "releaseMs": 120,
+      "filterCutoff": 5500,
+      "resonance": 0.2,
+      "delaySend": 0.25,
+      "reverbSend": 0.4
+    }
+  ],
+  "mixer": {
+    "masterGain": 0.62,
+    "limiterDrive": 1,
+    "delayFeedback": 0.32,
+    "reverbMix": 0.22,
+    "tracks": [
+      {
+        "track": "kick",
+        "gain": 1.0,
+        "pan": 0
+      },
+      {
+        "track": "snare",
+        "gain": 2,
+        "pan": 0
+      },
+      {
+        "track": "closed_hat",
+        "gain": 1.3,
+        "pan": 0.12
+      },
+      {
+        "track": "open_hat",
+        "gain": 0.93,
+        "pan": 0.2
+      },
+      {
+        "track": "percussion",
+        "gain": 1.5,
+        "pan": -0.24
+      },
+      {
+        "track": "bass",
+        "gain": 0.66,
+        "pan": 0
+      },
+      {
+        "track": "chords",
+        "gain": 0.74,
+        "pan": -0.12
+      },
+      {
+        "track": "pad",
+        "gain": 0.8,
+        "pan": 0
+      },
+      {
+        "track": "lead",
+        "gain": 1.1,
+        "pan": 0.08
+      },
+      {
+        "track": "arp",
+        "gain": 1.2,
+        "pan": 0.2
+      },
+      {
+        "track": "fx",
+        "gain": 2,
+        "pan": 0
+      }
+    ]
+  },
+  "limits": {
+    "minSampleRate": 22050,
+    "maxSampleRate": 96000,
+    "minBpm": 90,
+    "maxBpm": 160,
+    "maxTracks": 11,
+    "maxVoices": 48,
+    "maxBarsQueued": 16,
+    "maxEventsPerBlock": 128
+  }
+}

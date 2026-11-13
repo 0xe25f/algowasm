@@ -264,8 +264,7 @@ impl BassLine {
       (steps(&[0, 10]), steps(&[3, 6, 14]), 3.0 * (1.0 - density) + 0.5),
       (FOUR_ON_FLOOR, steps(&[2, 6, 10, 14, 15]), 2.0)
     ];
-    let weights: Vec<u32> =
-      templates.iter().map(|(_, _, weight)| (weight * 10.0).max(1.0) as u32).collect();
+    let weights = templates.map(|(_, _, weight)| (weight * 10.0).max(1.0) as u32);
     let (onsets, optional, _) = templates[rng.weighted_index(&weights)];
     let mut degrees = [0; STEPS_PER_BAR];
     let mut octaves = 0;
@@ -393,10 +392,10 @@ impl PatchVariation {
     let cutoff = patch.filter_cutoff * 2.0_f32.powf(self.cutoff_octaves);
     patch.filter_cutoff = cutoff.clamp(20.0, 20_000.0);
     patch.resonance = (patch.resonance + self.resonance).clamp(0.0, 0.85);
-    patch.attack_ms *= self.attack;
-    patch.decay_ms *= self.decay;
+    patch.attack_ms = (patch.attack_ms * self.attack).min(10_000.0);
+    patch.decay_ms = (patch.decay_ms * self.decay).min(10_000.0);
     patch.sustain = (patch.sustain + self.sustain).clamp(0.0, 1.0);
-    patch.release_ms *= self.release;
+    patch.release_ms = (patch.release_ms * self.release).min(10_000.0);
     patch.delay_send = (patch.delay_send * self.sends).clamp(0.0, 1.0);
     patch.reverb_send = (patch.reverb_send * self.sends).clamp(0.0, 1.0);
     patch.gain = (patch.gain * self.gain).clamp(0.0, 2.0);
@@ -415,6 +414,8 @@ pub struct SongGenome {
   pub lead_motif: Motif,
   pub bass_line: BassLine,
   pub bass_gate: u8,
+  /// When set, bass notes are held until the next note instead of gated.
+  pub bass_sustain: bool,
   pub signature_progression: [u8; 4],
   pub alt_progression: [u8; 4],
   pub seventh_chords: bool,
@@ -491,13 +492,14 @@ impl SongGenome {
       alt_fill_style = FillStyle::SnareEighths;
     }
 
-    Self {
+    let mut genome = Self {
       tempo_position,
       home_key,
       groove,
       lead_motif,
       bass_line,
       bass_gate: rng.pick(&[1, 2, 2, 3, 4]),
+      bass_sustain: false,
       signature_progression,
       alt_progression,
       seventh_chords: rng.chance(0.6),
@@ -514,7 +516,12 @@ impl SongGenome {
       drums: Self::drum_kit(&mut rng),
       automation: Self::automation(&mut rng, profile),
       patch_variations: Self::patch_variations(&mut rng)
-    }
+    };
+
+    // Drawn last, so adding this choice left every earlier draw, and
+    // therefore every existing song, unchanged.
+    genome.bass_sustain = rng.chance(profile.bass_rules.sustain_chance);
+    genome
   }
 
   fn groove(rng: &mut Rng64, profile: &Profile) -> Groove {
@@ -536,7 +543,11 @@ impl SongGenome {
     } else {
       rng.pick(&[None, Some(15), Some(13)])
     };
-    let snare = if four_on_floor || rng.chance(0.7) {
+    // The comparison is made in `f64` so that the default half-time chance
+    // of 0.3 gives exactly the 0.7 backbeat threshold earlier releases used.
+    let backbeat = four_on_floor
+      || f64::from(rng.next_f32()) < 1.0 - f64::from(profile.rhythm_rules.half_time_chance);
+    let snare = if backbeat {
       steps(&[4, 12])
     } else {
       steps(&[8])
@@ -754,7 +765,7 @@ fn sibling_wave(wave: WaveShape, pick: usize) -> WaveShape {
 #[cfg(test)]
 mod tests {
   use super::{has_step, rotate_steps, steps, SongGenome};
-  use crate::profile::{amiga_house_95ish, downtempo_breakbeat, dub_deep_house};
+  use crate::builtin::{amiga_house_95ish, downtempo_breakbeat, dub_deep_house};
   use std::collections::HashSet;
 
   #[test]
@@ -782,7 +793,7 @@ mod tests {
         })
         .collect();
 
-      assert!(tempos.len() >= 4, "{} tempos: {tempos:?}", profile.id);
+      assert!(tempos.len() >= 4, "tempos: {tempos:?}");
     }
   }
 
@@ -814,14 +825,8 @@ mod tests {
     for profile in [amiga_house_95ish(), downtempo_breakbeat(), dub_deep_house()] {
       for seed in 0..32 {
         let genome = SongGenome::generate(seed, &profile);
-        let mut varied = profile.clone();
-        let mut base = [profile.patches[0]; crate::types::TRACK_COUNT];
-
-        for patch in &profile.patches {
-          base[patch.track.as_index()] = *patch;
-        }
-
-        varied.patches = genome.patches(&base).to_vec();
+        let mut varied = profile;
+        varied.patches = genome.patches(&profile.patches);
         assert!(varied.validate().is_ok());
       }
     }

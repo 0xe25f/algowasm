@@ -1,4 +1,4 @@
-use crate::dsp::{denormal_guard, midi_to_hz, noise, OnePole, Svf};
+use crate::dsp::{denormal_guard, midi_to_hz, noise, poly_blep, OnePole, Svf};
 use crate::profile::Patch;
 use crate::types::{TrackId, WaveShape};
 use std::f32::consts::TAU;
@@ -56,6 +56,32 @@ impl Default for DrumKit {
   }
 }
 
+/// Samples between updates of each voice's filter modulation. The filter
+/// envelope and LFO move slowly, so their `exp` and `sin` calls are kept out
+/// of the per-sample path.
+pub const CONTROL_INTERVAL: u32 = 16;
+
+/// Song-wide values a voice needs while rendering.
+#[derive(Clone, Copy, Debug)]
+pub struct RenderContext {
+  pub sample_rate: f32,
+  /// Beats since the song started, used to keep filter LFOs locked to tempo.
+  pub beat: f64
+}
+
+/// Values needed to start a voice.
+#[derive(Clone, Copy, Debug)]
+pub struct VoiceStart {
+  pub track: TrackId,
+  pub note: i16,
+  pub velocity: f32,
+  pub length_samples: u32,
+  pub accent: bool,
+  pub slide: bool,
+  /// Varies the noise from hit to hit, so repeated drums are not identical.
+  pub seed: u32
+}
+
 /// A fixed-pool synth voice.
 #[derive(Clone, Copy, Debug)]
 pub struct Voice {
@@ -71,9 +97,24 @@ pub struct Voice {
   pub frequency: f32,
   pub accent: bool,
   pub slide: bool,
+  /// Where this voice sits in the stereo field, from -1 to 1, before the
+  /// patch's `width` scales it.
+  pub spread: f32,
+  /// Left and right mix gains, refreshed by the engine every few samples.
+  pub mix_left: f32,
+  pub mix_right: f32,
   noise_state: u32,
   filter: OnePole,
-  tone_filter: Svf
+  tone_filter: Svf,
+  attack: f32,
+  decay: f32,
+  sustain: f32,
+  detune_ratio: f32,
+  filter_env_decay: f32,
+  cutoff_mod: f32,
+  last_output: f32,
+  declick: f32,
+  declick_decay: f32
 }
 
 impl Voice {
@@ -92,49 +133,108 @@ impl Voice {
       frequency: 0.0,
       accent: false,
       slide: false,
+      spread: 0.0,
+      mix_left: 0.0,
+      mix_right: 0.0,
       noise_state: 1,
       filter: OnePole::new(),
-      tone_filter: Svf::new()
+      tone_filter: Svf::new(),
+      attack: 1.0,
+      decay: 1.0,
+      sustain: 0.0,
+      detune_ratio: 1.0,
+      filter_env_decay: 1.0,
+      cutoff_mod: 1.0,
+      last_output: 0.0,
+      declick: 0.0,
+      declick_decay: 0.0
     }
   }
 
-  /// Starts this voice.
-  ///
-  /// Passing scalar values keeps the fixed-pool hot path direct and allocation-free.
-  #[allow(clippy::too_many_arguments)]
-  pub fn start(
-    &mut self,
-    track: TrackId,
-    note: i16,
-    velocity: f32,
-    length_samples: u32,
-    sample_rate: f32,
-    accent: bool,
-    slide: bool
-  ) {
+  /// Returns true for tracks that use the oscillator, envelope, and filter
+  /// path rather than a dedicated drum model.
+  const fn is_tonal(track: TrackId) -> bool {
+    !matches!(
+      track,
+      TrackId::Kick
+        | TrackId::Snare
+        | TrackId::ClosedHat
+        | TrackId::OpenHat
+        | TrackId::Percussion
+        | TrackId::Fx
+    )
+  }
+
+  /// Starts this voice, replacing whatever it was playing.
+  pub fn start(&mut self, start: VoiceStart, patch: &Patch, sample_rate: f32) {
+    // A reused voice may still be sounding. Carrying its last output forward
+    // and fading it over a few milliseconds avoids a click at the changeover.
+    self.declick = if self.active { self.last_output } else { 0.0 };
+    self.declick_decay = (-1.0 / (sample_rate * 0.003)).exp();
+
+    let to_samples = |ms: f32| (ms / 1_000.0 * sample_rate).max(1.0);
+
     self.active = true;
-    self.track = track;
-    self.note = note;
-    self.velocity = velocity.clamp(0.0, 1.0);
+    self.track = start.track;
+    self.note = start.note;
+    self.velocity = start.velocity.clamp(0.0, 1.0);
     self.phase = 0.0;
     self.phase_alt = 0.25;
     self.age_samples = 0;
-    self.duration_samples = length_samples.max((sample_rate * 0.025) as u32);
-    self.release_samples = (sample_rate * 0.08) as u32;
-    self.frequency = midi_to_hz(note);
-    self.accent = accent;
-    self.slide = slide;
-    self.noise_state = note as u32 ^ length_samples ^ 0xa53c_9e11;
+    self.duration_samples = start.length_samples.max((sample_rate * 0.025) as u32);
+    self.frequency = midi_to_hz(start.note);
+    self.accent = start.accent;
+    self.slide = start.slide;
+    // Pitched notes spread by pitch, so chord tones fan out across the stereo
+    // field. Drums have one pitch, so they spread by a hash of the seed.
+    self.spread = if Self::is_tonal(start.track) {
+      f32::from((start.note * 7).rem_euclid(5) - 2) * 0.5
+    } else {
+      (start.seed.wrapping_mul(2_654_435_761) >> 29) as f32 / 3.5 - 1.0
+    };
+    self.noise_state = start.note as u32 ^ start.length_samples ^ start.seed ^ 0xa53c_9e11;
     self.filter = OnePole::new();
     self.tone_filter = Svf::new();
+    // A minimum attack of one millisecond stops notes starting with a step.
+    self.attack = to_samples(patch.attack_ms.max(1.0));
+    self.decay = to_samples(patch.decay_ms);
+    self.sustain = patch.sustain;
+    self.detune_ratio = 2.0_f32.powf(patch.detune_cents / 1_200.0);
+    self.filter_env_decay = to_samples(patch.filter_env_decay_ms);
+    self.cutoff_mod = 1.0;
+    self.last_output = 0.0;
+    // Tonal voices live until their release has finished. Drums keep a short
+    // fixed tail, which `tail_fade` brings down to silence.
+    self.release_samples = if Self::is_tonal(start.track) {
+      to_samples(patch.release_ms.max(5.0)) as u32
+    } else {
+      (sample_rate * 0.08) as u32
+    };
   }
 
-  /// Renders one mono sample.
-  pub fn render(&mut self, patch: Patch, kit: &DrumKit, sample_rate: f32) -> f32 {
+  /// Ends the voice quickly but smoothly. A closed hi-hat uses this to cut
+  /// off a ringing open hi-hat, as the two are one instrument.
+  pub fn choke(&mut self, sample_rate: f32) {
+    if self.active {
+      self.duration_samples = self.age_samples;
+      self.release_samples = (sample_rate * 0.012) as u32;
+    }
+  }
+
+  /// Renders one mono sample. `cutoff_scale` multiplies the patch's filter
+  /// cutoff, which lets the engine automate it without copying the patch.
+  pub fn render(
+    &mut self,
+    patch: &Patch,
+    cutoff_scale: f32,
+    kit: &DrumKit,
+    context: &RenderContext
+  ) -> f32 {
     if !self.active {
       return 0.0;
     }
 
+    let sample_rate = context.sample_rate;
     let value = match self.track {
       TrackId::Kick => self.render_kick(kit, sample_rate),
       TrackId::Snare => self.render_snare(kit, sample_rate),
@@ -142,8 +242,9 @@ impl Voice {
       TrackId::OpenHat => self.render_hat(kit, sample_rate, true),
       TrackId::Percussion => self.render_percussion(kit, sample_rate),
       TrackId::Fx => self.render_fx(kit, sample_rate),
-      _ => self.render_tonal(patch, sample_rate)
+      _ => self.render_tonal(patch, cutoff_scale, context)
     };
+    let shaped = if Self::is_tonal(self.track) { value } else { value * self.tail_fade() };
 
     self.age_samples = self.age_samples.saturating_add(1);
 
@@ -151,7 +252,21 @@ impl Voice {
       self.active = false;
     }
 
-    denormal_guard(value * patch.gain * self.velocity)
+    let output = shaped * patch.gain * self.velocity + self.declick;
+    self.declick = denormal_guard(self.declick * self.declick_decay);
+    self.last_output = denormal_guard(output);
+    self.last_output
+  }
+
+  /// Fades a drum voice to silence over its release tail, so that the voice
+  /// can be freed without cutting the decay off mid-swing.
+  fn tail_fade(&self) -> f32 {
+    if self.age_samples <= self.duration_samples {
+      return 1.0;
+    }
+
+    let into_tail = (self.age_samples - self.duration_samples) as f32;
+    (1.0 - into_tail / self.release_samples.max(1) as f32).clamp(0.0, 1.0)
   }
 
   fn render_kick(&mut self, kit: &DrumKit, sample_rate: f32) -> f32 {
@@ -203,12 +318,13 @@ impl Voice {
   fn render_fx(&mut self, kit: &DrumKit, sample_rate: f32) -> f32 {
     let t = self.age_samples as f32 / sample_rate;
     let env = (-t * 3.5).exp();
-    let sweep = 400.0 + 4_800.0 * (1.0 - (-t * kit.fx_sweep_rate).exp());
+    let sweep = 150.0 + 2_200.0 * (1.0 - (-t * kit.fx_sweep_rate).exp());
     let raw = noise(&mut self.noise_state) * env;
     self.filter.process(raw, sweep, sample_rate)
   }
 
-  fn render_tonal(&mut self, patch: Patch, sample_rate: f32) -> f32 {
+  fn render_tonal(&mut self, patch: &Patch, cutoff_scale: f32, context: &RenderContext) -> f32 {
+    let sample_rate = context.sample_rate;
     let freq = if self.slide {
       let slide_amount = (1.0 - (self.age_samples as f32 / self.duration_samples.max(1) as f32))
         .clamp(0.0, 1.0);
@@ -216,22 +332,76 @@ impl Voice {
     } else {
       self.frequency
     };
-    let osc = oscillator(patch.wave, self.phase, &mut self.noise_state);
+    let step = freq / sample_rate;
+    let mut osc = oscillator(patch.wave, self.phase, step, &mut self.noise_state);
     self.phase = advance_phase(self.phase, freq, sample_rate);
 
-    let env = adsr(
-      self.age_samples,
-      self.duration_samples,
-      patch.attack_ms,
-      patch.decay_ms,
-      patch.sustain,
-      patch.release_ms,
-      sample_rate
-    );
-    let cutoff = patch.filter_cutoff * if self.accent { 1.35 } else { 1.0 };
+    if patch.detune_cents > 0.0 {
+      // A second, slightly sharp oscillator beats against the first, which
+      // thickens the sound. The pair is scaled to keep the level similar.
+      let detuned = step * self.detune_ratio;
+      osc = (osc + oscillator(patch.wave, self.phase_alt, detuned, &mut self.noise_state)) * 0.6;
+      self.phase_alt = advance_phase(self.phase_alt, freq * self.detune_ratio, sample_rate);
+    }
+
+    if self.age_samples % CONTROL_INTERVAL == 0 {
+      self.cutoff_mod = self.filter_modulation(patch, context);
+    }
+
+    let env = self.envelope();
+    let cutoff =
+      patch.filter_cutoff * cutoff_scale * self.cutoff_mod * if self.accent { 1.35 } else { 1.0 };
     let filtered = self.tone_filter.process(osc * env, cutoff, patch.resonance, sample_rate);
 
     saturate(filtered, if self.accent { 1.7 } else { 1.2 })
+  }
+
+  /// Returns the cutoff multiplier from the filter envelope, the tempo-synced
+  /// LFO, and velocity.
+  fn filter_modulation(&self, patch: &Patch, context: &RenderContext) -> f32 {
+    // Louder notes open the filter by up to 0.4 octaves, and quiet notes
+    // close it by a little, so dynamics change tone as well as level.
+    let mut octaves = self.velocity - 0.6;
+
+    if patch.filter_env_octaves > 0.0 {
+      octaves +=
+        patch.filter_env_octaves * (-(self.age_samples as f32) / self.filter_env_decay).exp();
+    }
+
+    if patch.lfo_rate > 0.0 && patch.lfo_depth > 0.0 {
+      let cycle = (context.beat * f64::from(patch.lfo_rate)).fract() as f32;
+      octaves += patch.lfo_depth * (cycle * TAU).sin();
+    }
+
+    2.0_f32.powf(octaves)
+  }
+
+  /// Returns the amplitude envelope for the current sample.
+  fn envelope(&self) -> f32 {
+    if self.age_samples <= self.duration_samples {
+      return self.held_level(self.age_samples as f32);
+    }
+
+    // The release starts from wherever the envelope had reached, so a note
+    // that ends during its attack or decay does not jump to the sustain
+    // level. Squaring the ramp gives a more natural, faster-then-slower fade.
+    let level = self.held_level(self.duration_samples as f32);
+    let release_age = (self.age_samples - self.duration_samples) as f32;
+    let remaining = (1.0 - release_age / self.release_samples.max(1) as f32).clamp(0.0, 1.0);
+    level * remaining * remaining
+  }
+
+  /// Returns the attack, decay, and sustain level at an age in samples.
+  fn held_level(&self, age: f32) -> f32 {
+    if age < self.attack {
+      return age / self.attack;
+    }
+
+    if age < self.attack + self.decay {
+      return 1.0 + (self.sustain - 1.0) * (age - self.attack) / self.decay;
+    }
+
+    self.sustain
   }
 
   fn advance_osc(&mut self, freq: f32, sample_rate: f32) -> f32 {
@@ -245,27 +415,30 @@ impl Voice {
   }
 }
 
-fn oscillator(wave: WaveShape, phase: f32, noise_state: &mut u32) -> f32 {
+/// Returns one oscillator sample. `step` is the phase increment per sample,
+/// which the band-limiting correction needs.
+fn oscillator(wave: WaveShape, phase: f32, step: f32, noise_state: &mut u32) -> f32 {
   match wave {
     WaveShape::Sine => (phase * TAU).sin(),
     WaveShape::Triangle => 4.0 * (phase - 0.5).abs() - 1.0,
-    WaveShape::Saw => 2.0 * phase - 1.0,
-    WaveShape::Square => {
-      if phase < 0.5 {
-        1.0
-      } else {
-        -1.0
-      }
-    }
-    WaveShape::Pulse => {
-      if phase < 0.34 {
-        1.0
-      } else {
-        -1.0
-      }
-    }
+    WaveShape::Saw => 2.0 * phase - 1.0 - poly_blep(phase, step),
+    WaveShape::Square => pulse(phase, step, 0.5),
+    WaveShape::Pulse => pulse(phase, step, 0.34),
     WaveShape::Noise => noise(noise_state)
   }
+}
+
+/// Returns a band-limited pulse wave with the given duty cycle.
+fn pulse(phase: f32, step: f32, duty: f32) -> f32 {
+  let naive = if phase < duty { 1.0 } else { -1.0 };
+  // Phase and duty are both inside 0 to 1, so one conditional add wraps the
+  // difference without the cost of a general floating-point remainder.
+  let offset = phase - duty;
+  let falling = if offset < 0.0 { offset + 1.0 } else { offset };
+
+  // The wave steps up at phase 0 and down at the duty point, so each edge
+  // gets its own correction.
+  naive + poly_blep(phase, step) - poly_blep(falling, step)
 }
 
 fn advance_phase(phase: f32, frequency: f32, sample_rate: f32) -> f32 {
@@ -278,37 +451,6 @@ fn advance_phase(phase: f32, frequency: f32, sample_rate: f32) -> f32 {
   }
 }
 
-fn adsr(
-  age_samples: u32,
-  duration_samples: u32,
-  attack_ms: f32,
-  decay_ms: f32,
-  sustain: f32,
-  release_ms: f32,
-  sample_rate: f32
-) -> f32 {
-  let attack = ((attack_ms / 1_000.0) * sample_rate).max(1.0);
-  let decay = ((decay_ms / 1_000.0) * sample_rate).max(1.0);
-  let release = ((release_ms / 1_000.0) * sample_rate).max(1.0);
-  let age = age_samples as f32;
-
-  if age < attack {
-    return (age / attack).clamp(0.0, 1.0);
-  }
-
-  if age < attack + decay {
-    let progress = (age - attack) / decay;
-    return 1.0 + (sustain - 1.0) * progress;
-  }
-
-  if age_samples <= duration_samples {
-    return sustain;
-  }
-
-  let release_age = age_samples.saturating_sub(duration_samples) as f32;
-  (sustain * (1.0 - release_age / release)).clamp(0.0, 1.0)
-}
-
 fn saturate(input: f32, drive: f32) -> f32 {
   let driven = input * drive;
   driven / (1.0 + driven.abs())
@@ -316,20 +458,40 @@ fn saturate(input: f32, drive: f32) -> f32 {
 
 #[cfg(test)]
 mod tests {
-  use super::{DrumKit, Voice};
-  use crate::profile::amiga_house_95ish;
+  use super::{DrumKit, RenderContext, Voice, VoiceStart};
+  use crate::builtin::amiga_house_95ish;
   use crate::types::TrackId;
 
   #[test]
-  fn synth_output_is_finite() {
+  fn synth_output_is_finite_and_release_ends_without_a_step() {
     let profile = amiga_house_95ish();
     let patch = profile.patches[TrackId::Bass.as_index()];
+    let context = RenderContext {
+      sample_rate: 48_000.0,
+      beat: 0.0
+    };
     let mut voice = Voice::silent();
-    voice.start(TrackId::Bass, 40, 0.8, 4_800, 48_000.0, true, false);
+    voice.start(
+      VoiceStart {
+        track: TrackId::Bass,
+        note: 40,
+        velocity: 0.8,
+        length_samples: 4_800,
+        accent: true,
+        slide: false,
+        seed: 1
+      },
+      &patch,
+      48_000.0
+    );
+    let mut last = 0.0;
 
-    for _ in 0..256 {
-      let value = voice.render(patch, &DrumKit::classic(), 48_000.0);
-      assert!(value.is_finite());
+    while voice.active {
+      last = voice.render(&patch, 1.0, &DrumKit::classic(), &context);
+      assert!(last.is_finite());
     }
+
+    // The voice must have faded out before it was freed.
+    assert!(last.abs() < 0.01, "final sample {last}");
   }
 }

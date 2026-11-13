@@ -18,3 +18,12 @@ unsafe_code = "deny"
 panic = "warn"
 unwrap_used = "warn"
 expect_used = "warn"
+
+# Release builds favour a small WASM binary. `panic = "abort"` matches what
+# wasm32-unknown-unknown does anyway and drops the unwinding tables.
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

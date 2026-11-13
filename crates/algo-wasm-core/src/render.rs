@@ -1,20 +1,34 @@
+use crate::builtin::amiga_house_95ish;
 use crate::composition::{
   instrument_note_for_track, ArrangementGenerator, Chord, NoteStep, PatternBank, STEPS_PER_BAR
 };
-use crate::dsp::{DcBlocker, SoftLimiter, StereoDelay};
+use crate::dsp::{DcBlocker, Limiter, Reverb, StereoDelay};
 use crate::export::write_midi;
 use crate::genome::SongGenome;
-use crate::profile::{amiga_house_95ish, Patch, Profile, ProfileError};
+use crate::profile::{Patch, Profile, ProfileError};
 use crate::rng::Rng64;
-use crate::synth::{Voice, MAX_VOICES};
-use crate::types::{Mood, MusicEvent, SectionKind, TrackId, TRACK_COUNT};
-use serde::Serialize;
+use crate::synth::{RenderContext, Voice, VoiceStart, CONTROL_INTERVAL, MAX_VOICES};
+use crate::types::{Mood, MusicEvent, SectionKind, TrackId, EVENT_WIRE_SIZE, TRACK_COUNT};
 use std::error::Error;
 use std::f32::consts::TAU;
 use std::fmt::{Display, Formatter};
 
 /// Per-frame smoothing applied to automation, so that moves never click.
 const AUTOMATION_SMOOTHING: f32 = 0.002;
+
+/// Level of the delay return in the mix.
+const DELAY_RETURN: f32 = 0.9;
+
+/// Level of the reverb return in the mix, before the profile's `reverbMix`.
+const REVERB_RETURN: f32 = 2.4;
+
+/// Number of `f64` values in the binary snapshot.
+///
+/// The layout is `[seed high, seed low, sample rate, bpm, bar, beat,
+/// section, energy, intensity, playing]`, then `[muted, solo, level]` for each
+/// track in `TrackId::ALL` order. JavaScript decodes this layout, so it must
+/// stay in step with the package's decoder.
+pub const SNAPSHOT_WIRE_LEN: usize = 10 + TRACK_COUNT * 3;
 
 /// Rendering options for offline audio generation.
 #[derive(Clone, Copy, Debug)]
@@ -25,18 +39,17 @@ pub struct RenderOptions {
 }
 
 /// Engine metrics suitable for non-realtime reporting.
-#[derive(Clone, Copy, Debug, Default, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct EngineMetrics {
   pub rendered_frames: u64,
   pub active_voices: usize,
   pub dropped_voices: u64,
-  pub recent_events: usize
+  /// Events discarded because the buffer was full before it was drained.
+  pub dropped_events: u64
 }
 
 /// Public track snapshot.
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Copy, Debug)]
 pub struct TrackSnapshot {
   pub id: &'static str,
   pub muted: bool,
@@ -45,44 +58,69 @@ pub struct TrackSnapshot {
 }
 
 /// Public state snapshot.
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Copy, Debug)]
 pub struct Snapshot {
-  pub seed: String,
+  pub seed: u64,
   pub sample_rate: u32,
   pub bpm: f32,
   pub current_bar: u64,
   pub current_beat: u8,
-  pub current_section: &'static str,
+  pub current_section: SectionKind,
   pub energy: f32,
   pub intensity: f32,
   pub is_playing: bool,
-  pub tracks: Vec<TrackSnapshot>
+  pub tracks: [TrackSnapshot; TRACK_COUNT]
 }
 
-/// Engine construction and rendering errors.
-#[derive(Clone, Debug)]
+impl Snapshot {
+  /// Encodes the snapshot in the layout described on `SNAPSHOT_WIRE_LEN`.
+  pub fn to_wire(&self) -> [f64; SNAPSHOT_WIRE_LEN] {
+    let mut wire = [0.0; SNAPSHOT_WIRE_LEN];
+    wire[0] = (self.seed >> 32) as f64;
+    wire[1] = (self.seed & 0xffff_ffff) as f64;
+    wire[2] = f64::from(self.sample_rate);
+    wire[3] = f64::from(self.bpm);
+    wire[4] = self.current_bar as f64;
+    wire[5] = f64::from(self.current_beat);
+    wire[6] = f64::from(self.current_section.as_index());
+    wire[7] = f64::from(self.energy);
+    wire[8] = f64::from(self.intensity);
+    wire[9] = f64::from(u8::from(self.is_playing));
+
+    for (index, track) in self.tracks.iter().enumerate() {
+      let offset = 10 + index * 3;
+      wire[offset] = f64::from(u8::from(track.muted));
+      wire[offset + 1] = f64::from(u8::from(track.solo));
+      wire[offset + 2] = f64::from(track.level);
+    }
+
+    wire
+  }
+}
+
+/// Engine construction and control errors.
+#[derive(Clone, Copy, Debug)]
 pub struct EngineError {
-  message: String
+  message: &'static str
 }
 
 impl EngineError {
   /// Creates an engine error.
-  pub fn new(message: impl Into<String>) -> Self {
+  pub const fn new(message: &'static str) -> Self {
     Self {
-      message: message.into()
+      message
     }
   }
 
   /// Returns the public error message.
-  pub fn message(&self) -> &str {
-    &self.message
+  pub const fn message(&self) -> &'static str {
+    self.message
   }
 }
 
 impl Display for EngineError {
   fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
-    formatter.write_str(&self.message)
+    formatter.write_str(self.message)
   }
 }
 
@@ -90,7 +128,7 @@ impl Error for EngineError {}
 
 impl From<ProfileError> for EngineError {
   fn from(error: ProfileError) -> Self {
-    Self::new(error.message().to_string())
+    Self::new(error.message())
   }
 }
 
@@ -112,7 +150,7 @@ pub struct Engine {
   pattern_bank: PatternBank,
   previous_bank: Option<PatternBank>,
   voices: [Voice; MAX_VOICES],
-  base_patches: [Patch; TRACK_COUNT],
+  voice_limit: usize,
   patches: [Patch; TRACK_COUNT],
   automation: Automation,
   track_gain: [f32; TRACK_COUNT],
@@ -120,13 +158,17 @@ pub struct Engine {
   muted: [bool; TRACK_COUNT],
   solo: [bool; TRACK_COUNT],
   volume: f32,
+  volume_smoothed: f32,
   energy: f32,
   intensity: f32,
   mood: Mood,
+  duck: f32,
+  duck_target: f32,
   delay: StereoDelay,
+  reverb: Reverb,
   dc_left: DcBlocker,
   dc_right: DcBlocker,
-  limiter: SoftLimiter,
+  limiter: Limiter,
   events: Vec<MusicEvent>,
   metrics: EngineMetrics
 }
@@ -158,15 +200,15 @@ impl Engine {
       genome.home_key,
       0.5
     );
-    let base_patches = patch_array(&profile)?;
-    let patches = genome.patches(&base_patches);
-    let (track_gain, track_pan) = mixer_arrays(&profile)?;
-    let mut limiter = SoftLimiter::new(profile.mixer.limiter_drive);
-    limiter.set_drive(profile.mixer.limiter_drive);
+    let bpm = genome.bpm(profile.tempo);
+    let rate = sample_rate as f32;
+    let mut delay = StereoDelay::new(rate, profile.mixer.delay_feedback);
+    delay.set_tempo(bpm, rate);
+    let (track_gain, track_pan) = mixer_arrays(&profile);
 
     Ok(Self {
-      bpm: genome.bpm(profile.tempo),
-      sample_rate: sample_rate as f32,
+      bpm,
+      sample_rate: rate,
       seed,
       current_sample: 0,
       next_step_sample: 0,
@@ -176,26 +218,32 @@ impl Engine {
       section_change_pending: true,
       playing: false,
       rng,
+      patches: genome.patches(&profile.patches),
       genome,
       pattern_bank,
       previous_bank: None,
       voices: [Voice::silent(); MAX_VOICES],
-      base_patches,
-      patches,
+      voice_limit: profile.limits.max_voices.min(MAX_VOICES),
       automation: Automation::new(),
       track_gain,
       track_pan,
       muted: [false; TRACK_COUNT],
       solo: [false; TRACK_COUNT],
       volume: 0.8,
+      volume_smoothed: 0.8,
       energy: 0.5,
       intensity: 0.5,
       mood: Mood::Dark,
-      delay: StereoDelay::new(sample_rate as f32, profile.mixer.delay_feedback),
+      duck: 0.0,
+      duck_target: 0.0,
+      delay,
+      reverb: Reverb::new(rate),
       dc_left: DcBlocker::new(),
       dc_right: DcBlocker::new(),
-      limiter,
-      events: Vec::with_capacity(profile.limits.max_events_per_block),
+      limiter: Limiter::new(rate, profile.mixer.limiter_drive),
+      // Allocated once at the largest size a profile may ask for, so that
+      // changing profile never allocates.
+      events: Vec::with_capacity(crate::profile::MAX_EVENTS_LIMIT),
       metrics: EngineMetrics::default(),
       profile
     })
@@ -216,7 +264,7 @@ impl Engine {
     self.playing = true;
   }
 
-  /// Stops playback and clears active voices.
+  /// Stops playback, rewinds the transport, and clears voices and effects.
   pub fn stop(&mut self) {
     self.playing = false;
     self.current_sample = 0;
@@ -226,6 +274,13 @@ impl Engine {
     self.section_bar = 0;
     self.section_change_pending = true;
     self.voices = [Voice::silent(); MAX_VOICES];
+    self.duck = 0.0;
+    self.duck_target = 0.0;
+    self.delay.reset();
+    self.reverb.reset();
+    self.limiter.reset();
+    self.dc_left = DcBlocker::new();
+    self.dc_right = DcBlocker::new();
   }
 
   /// Re-seeds the engine and regenerates the song identity and material.
@@ -234,7 +289,8 @@ impl Engine {
     self.rng = Rng64::new(seed);
     self.genome = SongGenome::generate(seed, &self.profile);
     self.bpm = self.genome.bpm(self.profile.tempo);
-    self.patches = self.genome.patches(&self.base_patches);
+    self.delay.set_tempo(self.bpm, self.sample_rate);
+    self.patches = self.genome.patches(&self.profile.patches);
     self.automation = Automation::new();
     self.previous_bank = None;
     self.pattern_bank = PatternBank::generate(
@@ -249,15 +305,24 @@ impl Engine {
     self.stop();
   }
 
-  /// Applies a new profile.
+  /// Applies a new profile and restarts the song from its first bar.
   pub fn set_profile(&mut self, profile: Profile) -> Result<(), EngineError> {
     profile.validate()?;
-    self.base_patches = patch_array(&profile)?;
-    let (gain, pan) = mixer_arrays(&profile)?;
+
+    if (self.sample_rate as u32) < profile.limits.min_sample_rate
+      || (self.sample_rate as u32) > profile.limits.max_sample_rate
+    {
+      return Err(EngineError::new(
+        "Sample rate is outside the safe range declared by the profile."
+      ));
+    }
+
+    let (gain, pan) = mixer_arrays(&profile);
     self.track_gain = gain;
     self.track_pan = pan;
     self.limiter.set_drive(profile.mixer.limiter_drive);
-    self.delay = StereoDelay::new(self.sample_rate, profile.mixer.delay_feedback);
+    self.delay.set_feedback(profile.mixer.delay_feedback);
+    self.voice_limit = profile.limits.max_voices.min(MAX_VOICES);
     self.profile = profile;
     self.set_seed(self.seed);
     Ok(())
@@ -265,17 +330,17 @@ impl Engine {
 
   /// Sets master volume, clamped to a safe range.
   pub fn set_volume(&mut self, volume: f32) {
-    self.volume = volume.clamp(0.0, 1.0);
+    self.volume = unit_or(volume, self.volume);
   }
 
   /// Sets energy, clamped to a musical range.
   pub fn set_energy(&mut self, value: f32) {
-    self.energy = value.clamp(0.0, 1.0);
+    self.energy = unit_or(value, self.energy);
   }
 
   /// Sets intensity, clamped to a musical range.
   pub fn set_intensity(&mut self, value: f32) {
-    self.intensity = value.clamp(0.0, 1.0);
+    self.intensity = unit_or(value, self.intensity);
   }
 
   /// Sets mood.
@@ -288,18 +353,25 @@ impl Engine {
   /// The song keeps its relative place in the range, so a seed that plays
   /// near the top of the profile range also plays near the top of the new one.
   pub fn set_tempo_range(&mut self, min_bpm: f32, max_bpm: f32) -> Result<(), EngineError> {
-    if min_bpm > max_bpm
-      || min_bpm < self.profile.limits.min_bpm
-      || max_bpm > self.profile.limits.max_bpm
-    {
+    // Written as a positive test so that NaN fails it: every comparison with
+    // NaN is false, which the earlier "reject if out of range" form let through.
+    let valid = min_bpm.is_finite()
+      && max_bpm.is_finite()
+      && min_bpm <= max_bpm
+      && min_bpm >= self.profile.limits.min_bpm
+      && max_bpm <= self.profile.limits.max_bpm;
+
+    if !valid {
       return Err(EngineError::new(
-        "Tempo range must stay ordered and inside the profile safety limits."
+        "Tempo range must be finite, ordered, and inside the profile safety limits."
       ));
     }
 
     self.profile.tempo.min_bpm = min_bpm;
     self.profile.tempo.max_bpm = max_bpm;
+    self.profile.tempo.default_bpm = self.profile.tempo.default_bpm.clamp(min_bpm, max_bpm);
     self.bpm = self.genome.bpm_in_range(min_bpm, max_bpm);
+    self.delay.set_tempo(self.bpm, self.sample_rate);
     Ok(())
   }
 
@@ -314,9 +386,11 @@ impl Engine {
   }
 
   /// Renders interleaved stereo samples.
+  ///
+  /// Scheduler events accumulate across calls until `drain_events` or
+  /// `clear_events` is called, so a caller that reads them less often than it
+  /// renders does not lose any.
   pub fn render_interleaved(&mut self, output: &mut [f32]) {
-    self.events.clear();
-
     if output.is_empty() {
       return;
     }
@@ -335,14 +409,15 @@ impl Engine {
         self.next_step_sample = self.next_step_sample.saturating_add(self.step_duration(step));
       }
 
-      let (mut left, mut right) = self.render_frame();
-      left = self.dc_left.process(left);
-      right = self.dc_right.process(right);
-      left = self.limiter.process(left * self.volume);
-      right = self.limiter.process(right * self.volume);
+      let (left, right) = self.render_frame();
+      let (left, right) =
+        self.limiter.process(self.dc_left.process(left), self.dc_right.process(right));
 
-      output[frame * 2] = safe_sample(left);
-      output[frame * 2 + 1] = safe_sample(right);
+      // Volume sits after the limiter, so turning down really is quieter
+      // rather than just limiting less. It is smoothed to avoid zipper noise.
+      self.volume_smoothed += (self.volume - self.volume_smoothed) * AUTOMATION_SMOOTHING;
+      output[frame * 2] = left * self.volume_smoothed;
+      output[frame * 2 + 1] = right * self.volume_smoothed;
       self.current_sample = self.current_sample.saturating_add(1);
       self.metrics.rendered_frames = self.metrics.rendered_frames.saturating_add(1);
     }
@@ -352,7 +427,6 @@ impl Engine {
     }
 
     self.metrics.active_voices = self.voices.iter().filter(|voice| voice.active).count();
-    self.metrics.recent_events = self.events.len();
   }
 
   /// Renders offline stereo audio.
@@ -367,45 +441,46 @@ impl Engine {
 
   /// Returns a public snapshot.
   pub fn snapshot(&self) -> Snapshot {
-    let tracks = TrackId::ALL
-      .iter()
-      .map(|track| TrackSnapshot {
+    Snapshot {
+      seed: self.seed,
+      sample_rate: self.sample_rate as u32,
+      bpm: self.bpm,
+      current_bar: self.bar_index,
+      current_beat: (self.step_index / 4 + 1) as u8,
+      current_section: self.pattern_bank.section,
+      energy: self.energy,
+      intensity: self.intensity,
+      is_playing: self.playing,
+      tracks: TrackId::ALL.map(|track| TrackSnapshot {
         id: track.as_str(),
         muted: self.muted[track.as_index()],
         solo: self.solo[track.as_index()],
         level: self.track_gain[track.as_index()]
       })
-      .collect();
-
-    Snapshot {
-      seed: self.seed.to_string(),
-      sample_rate: self.sample_rate as u32,
-      bpm: self.bpm,
-      current_bar: self.bar_index,
-      current_beat: (self.step_index / 4 + 1) as u8,
-      current_section: self.pattern_bank.section.as_str(),
-      energy: self.energy,
-      intensity: self.intensity,
-      is_playing: self.playing,
-      tracks
     }
   }
 
-  /// Returns JSON for the current snapshot.
-  pub fn snapshot_json(&self) -> Result<String, EngineError> {
-    serde_json::to_string(&self.snapshot())
-      .map_err(|error| EngineError::new(format!("Snapshot could not be written as JSON: {error}.")))
-  }
-
-  /// Returns recent scheduler events.
+  /// Returns the scheduler events buffered since the last drain.
   pub fn current_events(&self) -> &[MusicEvent] {
     &self.events
   }
 
-  /// Returns recent events as JSON.
-  pub fn current_events_json(&self) -> Result<String, EngineError> {
-    serde_json::to_string(&self.events)
-      .map_err(|error| EngineError::new(format!("Events could not be written as JSON: {error}.")))
+  /// Discards the buffered scheduler events.
+  pub fn clear_events(&mut self) {
+    self.events.clear();
+  }
+
+  /// Writes the buffered events into `output` as groups of `EVENT_WIRE_SIZE`
+  /// values, clears the buffer, and returns the number of events written.
+  pub fn drain_events(&mut self, output: &mut [f64]) -> usize {
+    let count = self.events.len().min(output.len() / EVENT_WIRE_SIZE);
+
+    for (event, slot) in self.events.iter().zip(output.chunks_exact_mut(EVENT_WIRE_SIZE)) {
+      slot.copy_from_slice(&event.to_wire());
+    }
+
+    self.events.clear();
+    count
   }
 
   /// Returns current metrics.
@@ -450,6 +525,8 @@ impl Engine {
 
     if bar.kick[step] {
       self.start_voice(TrackId::Kick, NoteStep::new(36, 0.92, 2, true, false));
+      // Each kick pushes the ducking envelope to full depth.
+      self.duck_target = 1.0;
     }
 
     if bar.snare[step] > 0.0 {
@@ -457,6 +534,13 @@ impl Engine {
     }
 
     if bar.closed_hat[step] > 0.0 {
+      // A closed hi-hat silences a ringing open one, as on a real kit.
+      for voice in &mut self.voices {
+        if voice.track == TrackId::OpenHat {
+          voice.choke(self.sample_rate);
+        }
+      }
+
       self.start_voice(
         TrackId::ClosedHat,
         NoteStep::new(42, bar.closed_hat[step], 1, false, false)
@@ -502,42 +586,38 @@ impl Engine {
   fn start_voice(&mut self, track: TrackId, note: NoteStep) {
     let note = instrument_note_for_track(track, note);
     let length_samples = self.samples_per_step().saturating_mul(u64::from(note.length_steps)) as u32;
-    let mut selected = None;
-
-    for (index, voice) in self.voices.iter().enumerate() {
-      if !voice.active {
-        selected = Some(index);
-        break;
-      }
-    }
-
-    if selected.is_none() {
-      selected = self
-        .voices
+    let pool = &mut self.voices[..self.voice_limit.max(1)];
+    let free = pool.iter().position(|voice| !voice.active);
+    let index = free.unwrap_or_else(|| {
+      // Every voice is busy, so the oldest one is reused. The voice fades its
+      // old sound out as the new one starts, so the steal does not click.
+      self.metrics.dropped_voices = self.metrics.dropped_voices.saturating_add(1);
+      pool
         .iter()
         .enumerate()
         .max_by_key(|(_, voice)| voice.age_samples)
-        .map(|(index, _)| index);
-      self.metrics.dropped_voices = self.metrics.dropped_voices.saturating_add(1);
-    }
+        .map_or(0, |(index, _)| index)
+    });
 
-    if let Some(index) = selected {
-      self.voices[index].start(
-        track,
-        note.note,
-        note.velocity,
-        length_samples,
-        self.sample_rate,
-        note.accent,
-        note.slide
-      );
-      self.push_event(MusicEvent::NoteOn {
-        sample: self.current_sample,
+    pool[index].start(
+      VoiceStart {
         track,
         note: note.note,
-        velocity: note.velocity
-      });
-    }
+        velocity: note.velocity,
+        length_samples,
+        accent: note.accent,
+        slide: note.slide,
+        seed: self.current_sample as u32
+      },
+      &self.patches[track.as_index()],
+      self.sample_rate
+    );
+    self.push_event(MusicEvent::NoteOn {
+      sample: self.current_sample,
+      track,
+      note: note.note,
+      velocity: note.velocity
+    });
   }
 
   fn advance_step(&mut self) {
@@ -578,7 +658,9 @@ impl Engine {
     let any_solo = self.solo.iter().any(|value| *value);
     let mut left = 0.0;
     let mut right = 0.0;
-    let mut send = 0.0;
+    let mut delay_left = 0.0;
+    let mut delay_right = 0.0;
+    let mut reverb_send = 0.0;
     let mood_gain = match self.mood {
       Mood::Dark => 1.0,
       Mood::Bright => 1.04,
@@ -587,7 +669,19 @@ impl Engine {
     };
 
     self.automation.smooth();
+
+    // The ducking envelope jumps to full on each kick and recovers over about
+    // a third of a beat. A fast follower smooths the jump so it cannot click.
+    let recovery = 1.0 / (self.sample_rate * 20.0 / self.bpm);
+    self.duck_target = (self.duck_target - recovery).max(0.0);
+    self.duck += (self.duck_target - self.duck) * 0.01;
+
+    let context = RenderContext {
+      sample_rate: self.sample_rate,
+      beat: self.current_sample as f64 / (self.samples_per_step() * 4) as f64
+    };
     let automation = &self.automation;
+    let level = (0.75 + self.intensity * 0.35) * mood_gain;
 
     for voice in &mut self.voices {
       if !voice.active {
@@ -596,37 +690,58 @@ impl Engine {
 
       let index = voice.track.as_index();
       let audible = !self.muted[index] && (!any_solo || self.solo[index]);
-      let mut patch = self.patches[index];
-      patch.filter_cutoff *= automation.cutoff[index];
-      patch.delay_send = (patch.delay_send * automation.send[index]).clamp(0.0, 1.0);
-      patch.reverb_send = (patch.reverb_send * automation.send[index]).clamp(0.0, 1.0);
-      let mono = voice.render(patch, &self.genome.drums, self.sample_rate);
+      let patch = &self.patches[index];
+
+      // Pan and level move slowly, so each voice's mix gains are refreshed
+      // every few samples rather than paying for two square roots per sample.
+      if voice.age_samples % CONTROL_INTERVAL == 0 {
+        let pan = (self.track_pan[index]
+          + patch.pan
+          + automation.pan[index]
+          + patch.width * voice.spread)
+          .clamp(-1.0, 1.0);
+        let (left_gain, right_gain) = pan_gains(pan);
+        let gain = self.track_gain[index] * level * (1.0 - patch.duck * self.duck);
+        voice.mix_left = gain * left_gain;
+        voice.mix_right = gain * right_gain;
+      }
+
+      let mono = voice.render(patch, automation.cutoff[index], &self.genome.drums, &context);
 
       if !audible {
         continue;
       }
 
-      let gain = self.track_gain[index] * (0.75 + self.intensity * 0.35) * mood_gain;
-      let pan = (self.track_pan[index] + patch.pan + automation.pan[index]).clamp(-1.0, 1.0);
-      let (left_gain, right_gain) = pan_gains(pan);
-      left += mono * gain * left_gain;
-      right += mono * gain * right_gain;
-      send += (patch.delay_send + patch.reverb_send * self.profile.mixer.reverb_mix).clamp(0.0, 1.0)
-        * mono.abs()
-        * 0.15;
+      let voice_left = mono * voice.mix_left;
+      let voice_right = mono * voice.mix_right;
+      left += voice_left;
+      right += voice_right;
+
+      // Each voice feeds the effect buses with its own signal, scaled by its
+      // own send amounts, so a track with no send stays out of the effects.
+      let delay_amount = (patch.delay_send * automation.send[index]).clamp(0.0, 1.0);
+      let reverb_amount = (patch.reverb_send * automation.send[index]).clamp(0.0, 1.0);
+      delay_left += voice_left * delay_amount;
+      delay_right += voice_right * delay_amount;
+      reverb_send += (voice_left + voice_right) * 0.5 * reverb_amount;
     }
 
-    let (delay_left, delay_right) = self.delay.process(left, right, send.clamp(0.0, 0.6));
+    let (echo_left, echo_right) = self.delay.process(delay_left, delay_right);
+    let (tail_left, tail_right) = self.reverb.process(reverb_send);
+    let reverb_level = REVERB_RETURN * self.profile.mixer.reverb_mix;
+    let master = self.profile.mixer.master_gain;
 
     (
-      (left + delay_left * 0.35) * self.profile.mixer.master_gain,
-      (right + delay_right * 0.35) * self.profile.mixer.master_gain
+      (left + echo_left * DELAY_RETURN + tail_left * reverb_level) * master,
+      (right + echo_right * DELAY_RETURN + tail_right * reverb_level) * master
     )
   }
 
   fn push_event(&mut self, event: MusicEvent) {
     if self.events.len() < self.profile.limits.max_events_per_block {
       self.events.push(event);
+    } else {
+      self.metrics.dropped_events = self.metrics.dropped_events.saturating_add(1);
     }
   }
 
@@ -730,31 +845,8 @@ impl Automation {
   }
 }
 
-fn patch_array(profile: &Profile) -> Result<[Patch; TRACK_COUNT], EngineError> {
-  let first = profile
-    .patches
-    .first()
-    .copied()
-    .ok_or_else(|| EngineError::new("Profile must include patches."))?;
-  let mut patches = [first; TRACK_COUNT];
-
-  for patch in &profile.patches {
-    patches[patch.track.as_index()] = *patch;
-  }
-
-  Ok(patches)
-}
-
-fn mixer_arrays(profile: &Profile) -> Result<([f32; TRACK_COUNT], [f32; TRACK_COUNT]), EngineError> {
-  let mut gain = [1.0; TRACK_COUNT];
-  let mut pan = [0.0; TRACK_COUNT];
-
-  for track in &profile.mixer.tracks {
-    gain[track.track.as_index()] = track.gain;
-    pan[track.track.as_index()] = track.pan;
-  }
-
-  Ok((gain, pan))
+fn mixer_arrays(profile: &Profile) -> ([f32; TRACK_COUNT], [f32; TRACK_COUNT]) {
+  (profile.mixer.tracks.map(|track| track.gain), profile.mixer.tracks.map(|track| track.pan))
 }
 
 fn pan_gains(pan: f32) -> (f32, f32) {
@@ -763,25 +855,29 @@ fn pan_gains(pan: f32) -> (f32, f32) {
   (left.sqrt(), right.sqrt())
 }
 
-fn safe_sample(value: f32) -> f32 {
+/// Clamps a control value to 0 to 1, keeping the current value when the new
+/// one is not a finite number.
+fn unit_or(value: f32, current: f32) -> f32 {
   if value.is_finite() {
-    value.clamp(-1.0, 1.0)
+    value.clamp(0.0, 1.0)
   } else {
-    0.0
+    current
   }
 }
 
 #[cfg(test)]
 mod tests {
   use super::{Engine, EngineError, RenderOptions};
-  use crate::profile::{amiga_house_95ish, downtempo_breakbeat, dub_deep_house};
+  use crate::builtin::{all, amiga_house_95ish};
+  use crate::types::MusicEvent;
 
   #[test]
   fn render_outputs_finite_audio() {
     let profile = amiga_house_95ish();
     let mut engine = Engine::new(48_000, 123, profile).expect("engine should create");
     engine.start();
-    let mut output = vec![0.0; 128 * 2];
+    // Long enough to pass the limiter's look-ahead delay of a few milliseconds.
+    let mut output = vec![0.0; 1_024 * 2];
     engine.render_interleaved(&mut output);
 
     assert!(output.iter().all(|sample| sample.is_finite()));
@@ -791,7 +887,7 @@ mod tests {
   #[test]
   fn deterministic_render_matches() {
     let profile = amiga_house_95ish();
-    let mut left = Engine::new(48_000, 555, profile.clone()).expect("engine should create");
+    let mut left = Engine::new(48_000, 555, profile).expect("engine should create");
     let mut right = Engine::new(48_000, 555, profile).expect("engine should create");
     left.start();
     right.start();
@@ -826,7 +922,7 @@ mod tests {
     let mut renders = Vec::new();
 
     for seed in 0..8 {
-      let mut engine = Engine::new(22_050, seed, profile.clone())?;
+      let mut engine = Engine::new(22_050, seed, profile)?;
       engine.start();
       let mut output = vec![0.0; 22_050 * 2];
       engine.render_interleaved(&mut output);
@@ -847,9 +943,9 @@ mod tests {
 
   #[test]
   fn long_renders_stay_bounded_for_every_profile() -> Result<(), EngineError> {
-    for profile in [amiga_house_95ish(), downtempo_breakbeat(), dub_deep_house()] {
+    for profile in all() {
       for (seed, energy) in [(3, 0.1), (11, 0.95)] {
-        let mut engine = Engine::new(22_050, seed, profile.clone())?;
+        let mut engine = Engine::new(22_050, seed, profile)?;
         engine.set_energy(energy);
         engine.start();
         let mut output = vec![0.0; 22_050 * 2 * 20];
@@ -858,7 +954,7 @@ mod tests {
         let rms = (power / output.len() as f32).sqrt();
 
         assert!(output.iter().all(|sample| sample.is_finite() && sample.abs() <= 1.0));
-        assert!(rms > 0.01 && rms < 0.5, "{} seed {seed} rms {rms}", profile.id);
+        assert!(rms > 0.01 && rms < 0.5, "seed {seed} rms {rms}");
       }
     }
 
@@ -888,5 +984,39 @@ mod tests {
     engine.render_interleaved(&mut output);
 
     assert!(output.iter().all(|sample| *sample == 0.0));
+  }
+
+  #[test]
+  fn events_survive_until_drained() -> Result<(), EngineError> {
+    let mut engine = Engine::new(48_000, 777, amiga_house_95ish())?;
+    engine.start();
+    let mut block = vec![0.0; 128 * 2];
+    let mut wire = vec![0.0; 512 * 5];
+    let mut beats = 0;
+
+    // Ten seconds, drained only every sixteenth block as a slow reader would.
+    for index in 0..3_750 {
+      engine.render_interleaved(&mut block);
+
+      if index % 16 == 15 {
+        beats += engine.current_events().iter().filter(|event| matches!(event, MusicEvent::Beat { .. })).count();
+        engine.drain_events(&mut wire);
+      }
+    }
+
+    let expected = (engine.snapshot().bpm / 60.0 * 10.0) as usize;
+    assert!(beats + 1 >= expected, "saw {beats} beats, expected about {expected}");
+    assert_eq!(engine.metrics().dropped_events, 0);
+    Ok(())
+  }
+
+  #[test]
+  fn non_finite_tempo_range_is_rejected() -> Result<(), EngineError> {
+    let mut engine = Engine::new(48_000, 1, amiga_house_95ish())?;
+
+    assert!(engine.set_tempo_range(f32::NAN, f32::NAN).is_err());
+    assert!(engine.set_tempo_range(100.0, f32::INFINITY).is_err());
+    assert!(engine.snapshot().bpm.is_finite());
+    Ok(())
   }
 }
