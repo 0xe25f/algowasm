@@ -1,12 +1,32 @@
 import { AlgoWasmError } from './AlgoWasmError.js';
-import { splitSeed } from './profile.js';
-import type { AlgoWasmGeneratedEvent, AlgoWasmProfile, AlgoWasmSnapshot } from './types.js';
+import { EngineCore } from './engine-core.js';
+import { splitSeed, validateProfile } from './profile.js';
+import { encodeProfile, WIRE_MOODS, WIRE_TRACK_IDS } from './profile-wire.js';
+import { decodeEvents, decodeSnapshot } from './wire-decode.js';
+import type {
+  AlgoWasmGeneratedEvent,
+  AlgoWasmMood,
+  AlgoWasmProfile,
+  AlgoWasmSnapshot,
+  AlgoWasmTrackId
+} from './types.js';
 
+/** A compiled and instantiated AlgoWASM binary. */
 export interface AlgoWasmInstantiation {
   instance: WebAssembly.Instance;
   module: WebAssembly.Module;
 }
 
+/**
+ * Fetches and instantiates the AlgoWASM binary.
+ *
+ * Streaming compilation is used when the server sends `application/wasm`. If
+ * the MIME type is wrong, as on some local servers, the file is fetched again
+ * and compiled from bytes instead.
+ *
+ * @throws {AlgoWasmError} With code `wasm_load_failed` when the file cannot
+ * be fetched or compiled.
+ */
 export async function instantiateAlgoWasm(wasmUrl: string | URL): Promise<AlgoWasmInstantiation> {
   const url = wasmUrl.toString();
   const imports: WebAssembly.Imports = {};
@@ -55,262 +75,121 @@ export async function instantiateAlgoWasm(wasmUrl: string | URL): Promise<AlgoWa
   };
 }
 
-type WasmFn = (...args: number[]) => number;
-type AlgoWasmExports = Record<string, WebAssembly.ExportValue>;
+/**
+ * Converts a mood id to its engine index.
+ *
+ * @throws {TypeError} When the mood is not recognised.
+ */
+export function moodIndex(mood: AlgoWasmMood): number {
+  const index = WIRE_MOODS.indexOf(mood);
 
-export class AlgoWasmEngineBinding {
-  private readonly exports: AlgoWasmExports;
-  private readonly encoder = new TextEncoder();
-  private readonly decoder = new TextDecoder();
-  private enginePtr = 0;
-  private renderPtr = 0;
-  private renderLength = 0;
-  private renderView?: Float32Array;
-
-  constructor(instance: WebAssembly.Instance) {
-    this.exports = instance.exports as AlgoWasmExports;
-    this.requireMemory();
-    this.requireExport('algo_wasm_alloc');
-    this.requireExport('algo_wasm_dealloc');
+  if (index < 0) {
+    throw new TypeError(`Expected mood to be one of ${WIRE_MOODS.join(', ')}.`);
   }
 
+  return index;
+}
+
+/**
+ * Converts a track id to its engine index.
+ *
+ * @throws {TypeError} When the track id is not recognised.
+ */
+export function trackIndex(trackId: AlgoWasmTrackId): number {
+  const index = WIRE_TRACK_IDS.indexOf(trackId);
+
+  if (index < 0) {
+    throw new TypeError(`Expected trackId to be one of ${WIRE_TRACK_IDS.join(', ')}.`);
+  }
+
+  return index;
+}
+
+/**
+ * Typed binding to one engine inside a WASM instance, for use outside an
+ * `AlgoWasmPlayer`, for example to render audio offline.
+ *
+ * Memory ownership: the binding owns the WASM buffers it allocates. Call
+ * `destroy` when finished to free them.
+ *
+ * ```ts
+ * const { instance } = await instantiateAlgoWasm(wasmUrl);
+ * const binding = new AlgoWasmEngineBinding(instance);
+ *
+ * try {
+ *   binding.create(48000, 42n, builtInProfiles.dubstep());
+ *   binding.start();
+ *   binding.renderTo(output);
+ * } finally {
+ *   binding.destroy();
+ * }
+ * ```
+ */
+export class AlgoWasmEngineBinding extends EngineCore {
+  /**
+   * Validates the profile and creates the engine.
+   *
+   * @throws {AlgoWasmError} With code `profile_invalid` or `engine_failed`.
+   */
   create(sampleRate: number, seed: bigint, profile: AlgoWasmProfile): void {
-    if (this.enginePtr !== 0) {
-      this.destroy();
-    }
-
     const { high, low } = splitSeed(seed);
-    const profileJson = JSON.stringify(profile);
-    const result = this.withString(profileJson, (pointer, length) =>
-      this.call('algo_wasm_engine_create', sampleRate, high, low, pointer, length)
-    );
-
-    if (result === 0) {
-      throw new AlgoWasmError('engine_failed', this.readLastError('AlgoWASM engine creation failed.'));
-    }
-
-    this.enginePtr = result;
+    this.createFromWire(sampleRate, high, low, encodeProfile(validateProfile(profile)));
   }
 
-  start(): void {
-    this.callEngine('algo_wasm_engine_start');
-  }
-
-  pause(): void {
-    this.callEngine('algo_wasm_engine_pause');
-  }
-
-  resume(): void {
-    this.callEngine('algo_wasm_engine_resume');
-  }
-
-  stop(): void {
-    this.callEngine('algo_wasm_engine_stop');
-  }
-
+  /** Re-seeds the engine and restarts the song. */
   setSeed(seed: bigint): void {
     const { high, low } = splitSeed(seed);
-    this.callEngine('algo_wasm_engine_set_seed', high, low);
+    this.setSeedParts(high, low);
   }
 
+  /**
+   * Validates and applies a new profile, then restarts the song.
+   *
+   * @throws {AlgoWasmError} With code `profile_invalid` or `engine_failed`.
+   */
   setProfile(profile: AlgoWasmProfile): void {
-    const profileJson = JSON.stringify(profile);
-    const result = this.withString(profileJson, (pointer, length) =>
-      this.call('algo_wasm_engine_set_profile', this.enginePtr, pointer, length)
-    );
-    this.assertCode(result, 'Profile update failed.');
+    this.setProfileWire(encodeProfile(validateProfile(profile)));
   }
 
-  setVolume(value: number): void {
-    this.callEngine('algo_wasm_engine_set_volume', value);
+  /**
+   * Sets the mood.
+   *
+   * @throws {TypeError} When the mood is not recognised.
+   */
+  setMood(value: AlgoWasmMood): void {
+    this.setMoodIndex(moodIndex(value));
   }
 
-  setEnergy(value: number): void {
-    this.callEngine('algo_wasm_engine_set_energy', value);
+  /**
+   * Mutes or unmutes a track.
+   *
+   * @throws {TypeError} When the track id is not recognised.
+   */
+  setMuted(trackId: AlgoWasmTrackId, muted: boolean): void {
+    this.setMutedIndex(trackIndex(trackId), muted);
   }
 
-  setIntensity(value: number): void {
-    this.callEngine('algo_wasm_engine_set_intensity', value);
+  /**
+   * Solos or unsolos a track.
+   *
+   * @throws {TypeError} When the track id is not recognised.
+   */
+  setSolo(trackId: AlgoWasmTrackId, solo: boolean): void {
+    this.setSoloIndex(trackIndex(trackId), solo);
   }
 
-  setMood(value: string): void {
-    const result = this.withString(value, (pointer, length) =>
-      this.call('algo_wasm_engine_set_mood', this.enginePtr, pointer, length)
-    );
-    this.assertCode(result, 'Mood update failed.');
-  }
-
-  setTempoRange(minBpm: number, maxBpm: number): void {
-    this.callEngine('algo_wasm_engine_set_tempo_range', minBpm, maxBpm);
-  }
-
-  setMuted(trackId: string, muted: boolean): void {
-    const result = this.withString(trackId, (pointer, length) =>
-      this.call('algo_wasm_engine_set_muted', this.enginePtr, pointer, length, muted ? 1 : 0)
-    );
-    this.assertCode(result, 'Mute update failed.');
-  }
-
-  setSolo(trackId: string, solo: boolean): void {
-    const result = this.withString(trackId, (pointer, length) =>
-      this.call('algo_wasm_engine_set_solo', this.enginePtr, pointer, length, solo ? 1 : 0)
-    );
-    this.assertCode(result, 'Solo update failed.');
-  }
-
-  renderTo(output: Float32Array): void {
-    this.ensureEngine();
-    this.ensureRenderBuffer(output.length);
-    const result = this.call('algo_wasm_engine_render', this.enginePtr, this.renderPtr, output.length);
-    this.assertCode(result, 'Render failed.');
-
-    if (!this.renderView || this.renderView.length !== output.length) {
-      this.renderView = new Float32Array(this.memory.buffer, this.renderPtr, output.length);
-    }
-
-    output.set(this.renderView);
-  }
-
+  /** Returns the engine's current state. */
   snapshot(): AlgoWasmSnapshot {
-    this.ensureEngine();
-    const length = this.call('algo_wasm_engine_snapshot_json', this.enginePtr);
-    return this.readJson(length) as AlgoWasmSnapshot;
+    return decodeSnapshot(this.copySnapshot());
   }
 
+  /**
+   * Returns the events generated since the last call, and removes them from
+   * the engine's buffer. The buffer holds up to the profile's
+   * `limits.maxEventsPerBlock` events, so call this at least that often.
+   */
   events(): AlgoWasmGeneratedEvent[] {
-    this.ensureEngine();
-    const length = this.call('algo_wasm_engine_events_json', this.enginePtr);
-    return this.readJson(length) as AlgoWasmGeneratedEvent[];
-  }
-
-  exportMidi(): Uint8Array {
-    this.ensureEngine();
-    const length = this.call('algo_wasm_engine_export_midi', this.enginePtr);
-    const pointer = this.call('algo_wasm_bytes_ptr');
-
-    return new Uint8Array(this.memory.buffer, pointer, length).slice();
-  }
-
-  destroy(): void {
-    if (this.renderPtr !== 0) {
-      this.call('algo_wasm_dealloc', this.renderPtr, this.renderLength * 4);
-      this.renderPtr = 0;
-      this.renderLength = 0;
-      this.renderView = undefined;
-    }
-
-    if (this.enginePtr !== 0) {
-      this.call('algo_wasm_engine_destroy', this.enginePtr);
-      this.enginePtr = 0;
-    }
-  }
-
-  private ensureRenderBuffer(length: number): void {
-    if (this.renderPtr !== 0 && this.renderLength >= length) {
-      if (this.renderView?.buffer !== this.memory.buffer) {
-        this.renderView = new Float32Array(this.memory.buffer, this.renderPtr, this.renderLength);
-      }
-
-      return;
-    }
-
-    if (this.renderPtr !== 0) {
-      this.call('algo_wasm_dealloc', this.renderPtr, this.renderLength * 4);
-    }
-
-    this.renderLength = length;
-    this.renderPtr = this.call('algo_wasm_alloc', length * 4);
-
-    if (this.renderPtr === 0) {
-      throw new AlgoWasmError('render_failed', 'Could not allocate the WASM render buffer.');
-    }
-
-    this.renderView = new Float32Array(this.memory.buffer, this.renderPtr, length);
-  }
-
-  private get memory(): WebAssembly.Memory {
-    return this.requireMemory();
-  }
-
-  private requireMemory(): WebAssembly.Memory {
-    const memory = this.exports.memory;
-
-    if (!(memory instanceof WebAssembly.Memory)) {
-      throw new AlgoWasmError('wasm_load_failed', 'AlgoWASM did not export a WebAssembly memory.');
-    }
-
-    return memory;
-  }
-
-  private requireExport(name: string): WasmFn {
-    const fn = this.exports[name];
-
-    if (typeof fn !== 'function') {
-      throw new AlgoWasmError('wasm_load_failed', `AlgoWASM is missing the ${name} export.`);
-    }
-
-    return fn as WasmFn;
-  }
-
-  private call(name: string, ...args: number[]): number {
-    return this.requireExport(name)(...args);
-  }
-
-  private callEngine(name: string, ...args: number[]): void {
-    this.ensureEngine();
-    const result = this.call(name, this.enginePtr, ...args);
-    this.assertCode(result, `${String(name)} failed.`);
-  }
-
-  private assertCode(result: number, fallback: string): void {
-    if (result !== 0) {
-      throw new AlgoWasmError('engine_failed', this.readLastError(fallback));
-    }
-  }
-
-  private ensureEngine(): void {
-    if (this.enginePtr === 0) {
-      throw new AlgoWasmError('engine_failed', 'AlgoWASM engine has not been created.');
-    }
-  }
-
-  private withString<T>(value: string, callback: (pointer: number, length: number) => T): T {
-    const bytes = this.encoder.encode(value);
-    const pointer = this.call('algo_wasm_alloc', bytes.length);
-
-    if (pointer === 0) {
-      throw new AlgoWasmError('engine_failed', 'Could not allocate a WASM string buffer.');
-    }
-
-    new Uint8Array(this.memory.buffer, pointer, bytes.length).set(bytes);
-
-    try {
-      return callback(pointer, bytes.length);
-    } finally {
-      this.call('algo_wasm_dealloc', pointer, bytes.length);
-    }
-  }
-
-  private readJson(length: number): unknown {
-    if (length === 0) {
-      const error = this.readLastError('AlgoWASM returned an empty JSON buffer.');
-      throw new AlgoWasmError('engine_failed', error);
-    }
-
-    const pointer = this.call('algo_wasm_json_ptr');
-    const bytes = new Uint8Array(this.memory.buffer, pointer, length);
-    return JSON.parse(this.decoder.decode(bytes));
-  }
-
-  private readLastError(fallback: string): string {
-    const length = this.call('algo_wasm_last_error_len');
-
-    if (length === 0) {
-      return fallback;
-    }
-
-    const pointer = this.call('algo_wasm_last_error_ptr');
-    const bytes = new Uint8Array(this.memory.buffer, pointer, length);
-    return this.decoder.decode(bytes);
+    const wire = this.copyEvents();
+    return wire ? decodeEvents(wire) : [];
   }
 }

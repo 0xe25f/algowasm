@@ -1,12 +1,13 @@
 import { AlgoWasmError } from './AlgoWasmError.js';
 import { AlgoWasmEventEmitter } from './events.js';
-import { AlgoWasmEngineBinding, instantiateAlgoWasm } from './loadWasm.js';
-import { builtInProfiles, normaliseSeed, validateProfile } from './profile.js';
+import { AlgoWasmEngineBinding, instantiateAlgoWasm, moodIndex, trackIndex } from './loadWasm.js';
+import { builtInProfiles, normaliseSeed, splitSeed, validateProfile } from './profile.js';
+import { encodeProfile } from './profile-wire.js';
+import { decodeEvents, decodeSnapshot } from './wire-decode.js';
 import type {
   AlgoWasmEventHandler,
   AlgoWasmEventName,
   AlgoWasmGeneratedEvent,
-  AlgoWasmMetrics,
   AlgoWasmMidiExportOptions,
   AlgoWasmMood,
   AlgoWasmOfflineRenderOptions,
@@ -25,65 +26,106 @@ type PendingCommand = {
 type WorkletMessage =
   | {
       type: 'ready';
-      snapshot: AlgoWasmSnapshot;
+      snapshot: Float64Array;
     }
   | {
       type: 'command-result';
       id: number;
       ok: boolean;
-      result?: unknown;
+      snapshot?: Float64Array;
+      result?: ArrayBuffer;
       error?: string;
     }
   | {
       type: 'events';
-      events: AlgoWasmGeneratedEvent[];
-      snapshot?: AlgoWasmSnapshot;
-      metrics?: AlgoWasmMetrics;
+      events: Float64Array;
+      snapshot: Float64Array;
     }
   | {
       type: 'error';
       error: string;
     };
 
+/** Longest offline render accepted, in seconds. */
+const MAX_OFFLINE_SECONDS = 600;
+
+/** Frames rendered per chunk offline, before checking whether to yield. */
+const OFFLINE_CHUNK_FRAMES = 8192;
+
+/**
+ * Plays generated music through an `AudioWorklet`.
+ *
+ * Create a player with `AlgoWasmPlayer.create`, call `start` from a user
+ * gesture, and call `destroy` when finished. `destroy` frees the engine's
+ * WASM memory and, if the player created its own `AudioContext`, closes it.
+ *
+ * ```ts
+ * const player = await AlgoWasmPlayer.create({ wasmUrl, workletUrl, seed: 1995n });
+ * button.addEventListener('click', () => player.start());
+ * // Later:
+ * await player.destroy();
+ * ```
+ */
 export class AlgoWasmPlayer {
   private readonly emitter = new AlgoWasmEventEmitter();
   private readonly audioContext: AudioContext;
   private readonly ownsAudioContext: boolean;
   private readonly node: AudioWorkletNode;
   private readonly wasmUrl: string;
-  private readonly workletUrl: string;
   private readonly pending = new Map<number, PendingCommand>();
   private commandId = 1;
   private destroyed = false;
   private destroyPromise?: Promise<void>;
+  private offlineModule?: Promise<WebAssembly.Module>;
   private profile: AlgoWasmProfile;
   private seed: bigint;
   private lastSnapshot: AlgoWasmSnapshot;
   private lastEvents: AlgoWasmGeneratedEvent[] = [];
+  // The live control state is mirrored here so that offline renders can
+  // apply the same settings as the playing engine.
+  private volume = 0.8;
+  private energy = 0.5;
+  private intensity = 0.5;
+  private mood: AlgoWasmMood = 'dark';
+  private tempoRange?: { minBpm: number; maxBpm: number };
+  private readonly muted = new Set<AlgoWasmTrackId>();
+  private readonly solo = new Set<AlgoWasmTrackId>();
 
   private constructor(
     audioContext: AudioContext,
     ownsAudioContext: boolean,
     node: AudioWorkletNode,
     wasmUrl: string,
-    workletUrl: string,
     profile: AlgoWasmProfile,
-    seed: bigint,
-    initialSnapshot: AlgoWasmSnapshot
+    seed: bigint
   ) {
     this.audioContext = audioContext;
     this.ownsAudioContext = ownsAudioContext;
     this.node = node;
     this.wasmUrl = wasmUrl;
-    this.workletUrl = workletUrl;
     this.profile = profile;
     this.seed = seed;
-    this.lastSnapshot = initialSnapshot;
+    this.lastSnapshot = createInitialSnapshot(profile, seed, audioContext.sampleRate);
     this.node.port.onmessage = (event: MessageEvent<WorkletMessage>) => this.handleMessage(event.data);
   }
 
+  /**
+   * Loads the worklet and the WASM engine and returns a ready player.
+   *
+   * No sound plays until `start` is called. If loading fails, everything
+   * created along the way is released before the error is thrown.
+   *
+   * @throws {TypeError} When `wasmUrl` or `workletUrl` is missing.
+   * @throws {AlgoWasmError} With code `browser_feature_missing`,
+   * `profile_invalid`, `worklet_load_failed`, `wasm_load_failed`, or
+   * `engine_failed`.
+   */
   static async create(options: AlgoWasmPlayerOptions): Promise<AlgoWasmPlayer> {
     assertBrowserSupport();
+
+    if (!options?.wasmUrl || !options.workletUrl) {
+      throw new TypeError('Expected options.wasmUrl and options.workletUrl to be a string or URL.');
+    }
 
     const profile = validateProfile(options.profile ?? builtInProfiles.amigaHouse95ish());
     const seed = normaliseSeed(options.seed);
@@ -91,45 +133,62 @@ export class AlgoWasmPlayer {
     const workletUrl = options.workletUrl.toString();
     const ownsAudioContext = !options.audioContext;
     const audioContext = options.audioContext ?? new AudioContext();
-
-    if (!audioContext.audioWorklet) {
-      throw new AlgoWasmError(
-        'browser_feature_missing',
-        'AudioWorklet is not available in this browser. AlgoWASM targets modern browsers from 2025 onwards.'
-      );
-    }
+    let node: AudioWorkletNode | undefined;
 
     try {
-      await audioContext.audioWorklet.addModule(workletUrl);
-    } catch (error) {
-      throw new AlgoWasmError('worklet_load_failed', `Could not load the AlgoWASM worklet from ${workletUrl}.`, {
-        cause: error
+      if (!audioContext.audioWorklet) {
+        throw new AlgoWasmError(
+          'browser_feature_missing',
+          'AudioWorklet is not available in this browser. AlgoWASM targets modern browsers from 2025 onwards.'
+        );
+      }
+
+      try {
+        await audioContext.audioWorklet.addModule(workletUrl);
+      } catch (error) {
+        throw new AlgoWasmError('worklet_load_failed', `Could not load the AlgoWASM worklet from ${workletUrl}.`, {
+          cause: error
+        });
+      }
+
+      node = new AudioWorkletNode(audioContext, 'algo-wasm-processor', {
+        numberOfInputs: 0,
+        numberOfOutputs: 1,
+        outputChannelCount: [2]
       });
+      node.connect(audioContext.destination);
+
+      const player = new AlgoWasmPlayer(audioContext, ownsAudioContext, node, wasmUrl, profile, seed);
+      player.volume = clampUnit(options.volume ?? 0.8);
+      await player.configure();
+      return player;
+    } catch (error) {
+      // Without this clean-up a failed load would leave a connected node and
+      // an open AudioContext behind. Browsers only allow a handful of
+      // contexts, so repeated retries would eventually stop audio working.
+      if (node) {
+        node.port.postMessage({ type: 'destroy' });
+        node.disconnect();
+        node.port.close();
+      }
+
+      if (ownsAudioContext && audioContext.state !== 'closed') {
+        await audioContext.close().catch(() => {
+          // The context may already be closing. The original error matters more.
+        });
+      }
+
+      throw error;
     }
-
-    const node = new AudioWorkletNode(audioContext, 'algo-wasm-processor', {
-      numberOfInputs: 0,
-      numberOfOutputs: 1,
-      outputChannelCount: [2]
-    });
-    node.connect(audioContext.destination);
-
-    const initialSnapshot = createInitialSnapshot(profile, seed, audioContext.sampleRate);
-    const player = new AlgoWasmPlayer(
-      audioContext,
-      ownsAudioContext,
-      node,
-      wasmUrl,
-      workletUrl,
-      profile,
-      seed,
-      initialSnapshot
-    );
-
-    await player.configure(options.volume ?? 0.8);
-    return player;
   }
 
+  /**
+   * Starts playback. Call this from a user gesture such as a click, because
+   * browsers keep audio locked until then.
+   *
+   * @throws {AlgoWasmError} With code `audio_context_locked`, `engine_failed`,
+   * or `destroyed`.
+   */
   async start(): Promise<void> {
     this.assertAlive();
 
@@ -150,18 +209,18 @@ export class AlgoWasmPlayer {
       );
     }
 
-    const snapshot = (await this.sendCommand('start')) as AlgoWasmSnapshot;
-    this.updateSnapshot(snapshot);
+    await this.sendCommand('start');
     this.emitter.emit('started', this.lastSnapshot);
   }
 
+  /** Pauses playback, keeping the position in the song. */
   async pause(): Promise<void> {
     this.assertAlive();
-    const snapshot = (await this.sendCommand('pause')) as AlgoWasmSnapshot;
-    this.updateSnapshot(snapshot);
+    await this.sendCommand('pause');
     this.emitter.emit('paused', this.lastSnapshot);
   }
 
+  /** Resumes playback after `pause`. */
   async resume(): Promise<void> {
     this.assertAlive();
     const unlockState = await resumeAudioContext(this.audioContext);
@@ -173,18 +232,22 @@ export class AlgoWasmPlayer {
       );
     }
 
-    const snapshot = (await this.sendCommand('resume')) as AlgoWasmSnapshot;
-    this.updateSnapshot(snapshot);
+    await this.sendCommand('resume');
     this.emitter.emit('resumed', this.lastSnapshot);
   }
 
+  /** Stops playback and rewinds the song to its first bar. */
   async stop(): Promise<void> {
     this.assertAlive();
-    const snapshot = (await this.sendCommand('stop')) as AlgoWasmSnapshot;
-    this.updateSnapshot(snapshot);
+    await this.sendCommand('stop');
     this.emitter.emit('stopped', this.lastSnapshot);
   }
 
+  /**
+   * Frees the engine and its WASM memory, disconnects the audio node, removes
+   * every event handler, and closes the `AudioContext` if the player created
+   * it. Safe to call more than once; later calls return the same promise.
+   */
   async destroy(): Promise<void> {
     // Memoise the in-flight promise (set synchronously, before any await) so
     // overlapping calls share one teardown instead of each racing to send
@@ -224,80 +287,200 @@ export class AlgoWasmPlayer {
     }
   }
 
+  /**
+   * Changes the seed, which selects a different song. Playback stops; call
+   * `start` to hear the new song.
+   *
+   * @throws {AlgoWasmError} With code `profile_invalid` for a malformed seed.
+   */
   setSeed(seed: bigint | number | string): void {
     this.seed = normaliseSeed(seed);
-    this.postLiveCommand('set-seed', { seed: this.seed.toString() });
+    const { high, low } = splitSeed(this.seed);
+    this.postLiveCommand('set-seed', { seedHigh: high, seedLow: low });
   }
 
+  /**
+   * Changes the profile. Playback stops and the song restarts from its first
+   * bar; call `start` to hear it.
+   *
+   * @throws {AlgoWasmError} With code `profile_invalid`.
+   */
   setProfile(profile: AlgoWasmProfile): void {
     this.profile = validateProfile(profile);
-    this.postLiveCommand('set-profile', { profile: this.profile });
+    // A profile carries its own tempo range, which replaces any override.
+    this.tempoRange = undefined;
+    this.postLiveCommand('set-profile', { profile: encodeProfile(this.profile) });
   }
 
+  /** Sets master volume. Values are clamped to 0 to 1. */
   setVolume(volume: number): void {
-    this.postLiveCommand('set-volume', { value: clampUnit(volume) });
+    this.volume = clampUnit(volume);
+    this.postLiveCommand('set-volume', { value: this.volume });
   }
 
+  /**
+   * Mutes or unmutes a track.
+   *
+   * @throws {TypeError} When the track id is not recognised.
+   */
   setMuted(trackId: AlgoWasmTrackId, muted: boolean): void {
-    this.postLiveCommand('set-muted', { trackId, muted });
+    const track = trackIndex(trackId);
+    updateSet(this.muted, trackId, muted);
+    this.postLiveCommand('set-muted', { track, flag: Boolean(muted) });
   }
 
+  /**
+   * Solos or unsolos a track. While any track is soloed, only soloed tracks
+   * are heard.
+   *
+   * @throws {TypeError} When the track id is not recognised.
+   */
   setSolo(trackId: AlgoWasmTrackId, solo: boolean): void {
-    this.postLiveCommand('set-solo', { trackId, solo });
+    const track = trackIndex(trackId);
+    updateSet(this.solo, trackId, solo);
+    this.postLiveCommand('set-solo', { track, flag: Boolean(solo) });
   }
 
+  /** Sets energy, which drives arrangement density. Clamped to 0 to 1. */
   setEnergy(value: number): void {
-    this.postLiveCommand('set-energy', { value: clampUnit(value) });
+    this.energy = clampUnit(value);
+    this.postLiveCommand('set-energy', { value: this.energy });
   }
 
+  /** Sets intensity, which drives overall level. Clamped to 0 to 1. */
   setIntensity(value: number): void {
-    this.postLiveCommand('set-intensity', { value: clampUnit(value) });
+    this.intensity = clampUnit(value);
+    this.postLiveCommand('set-intensity', { value: this.intensity });
   }
 
+  /**
+   * Sets the mood, which tilts the tone brighter or darker.
+   *
+   * @throws {TypeError} When the mood is not recognised.
+   */
   setMood(mood: AlgoWasmMood): void {
-    this.postLiveCommand('set-mood', { mood });
+    const index = moodIndex(mood);
+    this.mood = mood;
+    this.postLiveCommand('set-mood', { mood: index });
   }
 
+  /**
+   * Narrows or moves the tempo range. The song keeps its relative place in
+   * the range. The range must sit inside the profile's `limits`; if it does
+   * not, an `error` event is emitted and the tempo is unchanged.
+   *
+   * @throws {TypeError} When either value is not a finite number.
+   * @throws {RangeError} When `minBpm` is greater than `maxBpm`.
+   */
   setTempoRange(minBpm: number, maxBpm: number): void {
+    if (!Number.isFinite(minBpm) || !Number.isFinite(maxBpm)) {
+      throw new TypeError('Expected minBpm and maxBpm to be finite numbers.');
+    }
+
+    if (minBpm > maxBpm) {
+      throw new RangeError('Expected minBpm to be less than or equal to maxBpm.');
+    }
+
+    this.tempoRange = { minBpm, maxBpm };
     this.postLiveCommand('set-tempo-range', { minBpm, maxBpm });
   }
 
+  /** Returns a copy of the most recent engine state. */
   getSnapshot(): AlgoWasmSnapshot {
     return structuredClone(this.lastSnapshot);
   }
 
+  /** Returns a copy of the most recent batch of generated events. */
   getCurrentEvents(): AlgoWasmGeneratedEvent[] {
     return structuredClone(this.lastEvents);
   }
 
-  async exportMidi(_options: AlgoWasmMidiExportOptions = {}): Promise<Uint8Array> {
+  /**
+   * Exports the current four-bar phrase as a type-0 MIDI file.
+   *
+   * When `options.downloadName` is given and a document is available, the
+   * file is also offered to the user as a download with that name.
+   */
+  async exportMidi(options: AlgoWasmMidiExportOptions = {}): Promise<Uint8Array> {
     this.assertAlive();
-    const bytes = (await this.sendCommand('export-midi')) as ArrayBuffer;
-    return new Uint8Array(bytes);
+    const bytes = new Uint8Array((await this.sendCommand('export-midi')) as ArrayBuffer);
+
+    if (options.downloadName && typeof document !== 'undefined') {
+      const url = URL.createObjectURL(new Blob([bytes], { type: 'audio/midi' }));
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = options.downloadName;
+      link.click();
+      URL.revokeObjectURL(url);
+    }
+
+    return bytes;
   }
 
+  /**
+   * Renders the song from its first bar into interleaved stereo samples
+   * (left, right, left, ...), without playing it.
+   *
+   * The render uses the player's current volume, energy, intensity, mood,
+   * tempo range, mutes, and solos. It runs in chunks and yields to the page
+   * between them, so long renders do not freeze the tab.
+   *
+   * @throws {RangeError} When `seconds` is not between 0 and 600, or
+   * `sampleRate` is not a whole number from 22050 to 96000.
+   * @throws {AlgoWasmError} With code `profile_invalid`, `wasm_load_failed`,
+   * `engine_failed`, or `destroyed`.
+   */
   async renderOffline(options: AlgoWasmOfflineRenderOptions): Promise<Float32Array> {
     this.assertAlive();
+    const seconds = options?.seconds;
+    const sampleRate = options?.sampleRate ?? this.audioContext.sampleRate;
+
+    if (typeof seconds !== 'number' || !(seconds >= 0 && seconds <= MAX_OFFLINE_SECONDS)) {
+      throw new RangeError(`Expected seconds to be a number from 0 to ${MAX_OFFLINE_SECONDS}.`);
+    }
+
+    if (!Number.isInteger(sampleRate) || sampleRate < 22050 || sampleRate > 96000) {
+      throw new RangeError('Expected sampleRate to be a whole number from 22050 to 96000.');
+    }
+
     const profile = validateProfile(options.profile ?? this.profile);
     const seed = normaliseSeed(options.seed ?? this.seed);
-    const sampleRate = options.sampleRate ?? this.audioContext.sampleRate;
-    const frames = Math.max(0, Math.floor(options.seconds * sampleRate));
-    const output = new Float32Array(frames * 2);
-    const { instance } = await instantiateAlgoWasm(this.wasmUrl);
+    const output = new Float32Array(Math.floor(seconds * sampleRate) * 2);
+    const instance = await WebAssembly.instantiate(await this.compileOffline(), {});
     const binding = new AlgoWasmEngineBinding(instance);
 
     try {
       binding.create(sampleRate, seed, profile);
-      binding.start();
-      const chunkFrames = 2048;
-      let offset = 0;
+      binding.setVolume(this.volume);
+      binding.setEnergy(this.energy);
+      binding.setIntensity(this.intensity);
+      binding.setMood(this.mood);
 
-      while (offset < output.length) {
-        const chunkLength = Math.min(chunkFrames * 2, output.length - offset);
-        const chunk = new Float32Array(chunkLength);
-        binding.renderTo(chunk);
-        output.set(chunk, offset);
-        offset += chunkLength;
+      // An override only applies to the profile it was set against.
+      if (this.tempoRange && !options.profile) {
+        binding.setTempoRange(this.tempoRange.minBpm, this.tempoRange.maxBpm);
+      }
+
+      for (const trackId of this.muted) {
+        binding.setMuted(trackId, true);
+      }
+
+      for (const trackId of this.solo) {
+        binding.setSolo(trackId, true);
+      }
+
+      binding.start();
+      let lastYield = performance.now();
+
+      for (let offset = 0; offset < output.length; offset += OFFLINE_CHUNK_FRAMES * 2) {
+        binding.renderTo(output.subarray(offset, offset + OFFLINE_CHUNK_FRAMES * 2));
+
+        // Hand control back to the page every few milliseconds so input and
+        // rendering stay responsive during a long render.
+        if (performance.now() - lastYield > 12) {
+          await new Promise(resolve => setTimeout(resolve));
+          lastYield = performance.now();
+        }
       }
     } finally {
       binding.destroy();
@@ -306,6 +489,12 @@ export class AlgoWasmPlayer {
     return output;
   }
 
+  /**
+   * Subscribes to a player event and returns a function that unsubscribes.
+   *
+   * `beat`, `bar`, and `section-change` arrive in batches about every 21 ms,
+   * so they can trail the audio by that much.
+   */
   on<Name extends AlgoWasmEventName>(
     eventName: Name,
     handler: AlgoWasmEventHandler<Name>
@@ -313,6 +502,7 @@ export class AlgoWasmPlayer {
     return this.emitter.on(eventName, handler);
   }
 
+  /** Removes a handler added with `on`. */
   off<Name extends AlgoWasmEventName>(
     eventName: Name,
     handler: AlgoWasmEventHandler<Name>
@@ -320,9 +510,26 @@ export class AlgoWasmPlayer {
     this.emitter.off(eventName, handler);
   }
 
-  private async configure(volume: number): Promise<void> {
+  /**
+   * Compiles the WASM module for offline rendering on first use and reuses
+   * it afterwards, so repeated renders do not fetch or compile again.
+   */
+  private compileOffline(): Promise<WebAssembly.Module> {
+    this.offlineModule ??= instantiateAlgoWasm(this.wasmUrl).then(
+      result => result.module,
+      error => {
+        // Forget a failed attempt so that the next call can try again.
+        this.offlineModule = undefined;
+        throw error;
+      }
+    );
+
+    return this.offlineModule;
+  }
+
+  private async configure(): Promise<void> {
     const wasmBytes = await fetchWasmBytes(this.wasmUrl);
-    const ready = new Promise<AlgoWasmSnapshot>((resolve, reject) => {
+    const ready = new Promise<void>((resolve, reject) => {
       let offReady = () => {};
       let offError = () => {};
       const timeout = setTimeout(() => {
@@ -336,11 +543,11 @@ export class AlgoWasmPlayer {
         );
       }, 5000);
 
-      offReady = this.on('ready', snapshot => {
+      offReady = this.on('ready', () => {
         clearTimeout(timeout);
         offReady();
         offError();
-        resolve(snapshot);
+        resolve();
       });
       offError = this.on('error', error => {
         clearTimeout(timeout);
@@ -349,21 +556,22 @@ export class AlgoWasmPlayer {
         reject(error);
       });
     });
+    const { high, low } = splitSeed(this.seed);
 
     this.node.port.postMessage(
       {
         type: 'configure',
-        wasmUrl: this.wasmUrl,
         wasmBytes,
-        profile: this.profile,
-        seed: this.seed.toString(),
-        volume: clampUnit(volume),
+        profile: encodeProfile(this.profile),
+        seedHigh: high,
+        seedLow: low,
+        value: this.volume,
         sampleRate: this.audioContext.sampleRate
       },
       [wasmBytes]
     );
 
-    this.updateSnapshot(await ready);
+    await ready;
   }
 
   private postLiveCommand(type: string, payload: Record<string, unknown>): void {
@@ -409,29 +617,18 @@ export class AlgoWasmPlayer {
 
   private handleMessage(message: WorkletMessage): void {
     if (message.type === 'ready') {
-      this.updateSnapshot(message.snapshot);
+      this.lastSnapshot = decodeSnapshot(message.snapshot);
       this.emitter.emit('ready', this.lastSnapshot);
       return;
     }
 
     if (message.type === 'events') {
-      this.lastEvents = message.events;
+      this.lastEvents = decodeEvents(message.events);
+      this.lastSnapshot = decodeSnapshot(message.snapshot);
 
-      if (message.snapshot) {
-        this.updateSnapshot(message.snapshot);
-      }
-
-      if (message.metrics) {
-        this.emitter.emit('metrics', message.metrics);
-      }
-
-      for (const event of message.events) {
-        if (event.type === 'section-change') {
-          this.emitter.emit('section-change', event);
-        } else if (event.type === 'bar') {
-          this.emitter.emit('bar', event);
-        } else if (event.type === 'beat') {
-          this.emitter.emit('beat', event);
+      for (const event of this.lastEvents) {
+        if (event.type === 'section-change' || event.type === 'bar' || event.type === 'beat') {
+          this.emitter.emit(event.type, event);
         }
       }
 
@@ -453,6 +650,12 @@ export class AlgoWasmPlayer {
     this.pending.delete(message.id);
 
     if (message.ok) {
+      // The snapshot is applied before the promise resolves, so callers that
+      // await a command always read the state that command produced.
+      if (message.snapshot) {
+        this.lastSnapshot = decodeSnapshot(message.snapshot);
+      }
+
       pending.resolve(message.result);
       return;
     }
@@ -460,14 +663,18 @@ export class AlgoWasmPlayer {
     pending.reject(new AlgoWasmError('engine_failed', message.error ?? 'Worklet command failed.'));
   }
 
-  private updateSnapshot(snapshot: AlgoWasmSnapshot): void {
-    this.lastSnapshot = structuredClone(snapshot);
-  }
-
   private assertAlive(): void {
     if (this.destroyed) {
       throw new AlgoWasmError('destroyed', 'AlgoWASM player has been destroyed.');
     }
+  }
+}
+
+function updateSet<Value>(set: Set<Value>, value: Value, present: boolean): void {
+  if (present) {
+    set.add(value);
+  } else {
+    set.delete(value);
   }
 }
 
