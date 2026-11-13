@@ -1,7 +1,7 @@
 {
   "id": "downtempo_breakbeat",
   "displayName": "Downtempo Breakbeat",
-  "version": "0.1.0",
+  "version": "1.2.0",
   "tempo": {
     "minBpm": 88,
     "maxBpm": 112,

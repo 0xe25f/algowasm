@@ -1,7 +1,7 @@
 {
   "id": "dub_deep_house",
   "displayName": "Dub Deep House",
-  "version": "0.1.0",
+  "version": "1.2.0",
   "tempo": {
     "minBpm": 118,
     "maxBpm": 124,

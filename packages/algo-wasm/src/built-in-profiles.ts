@@ -9,7 +9,7 @@ export const builtInProfileData: Record<BuiltInProfileName, AlgoWasmProfile> = {
   amigaHouse95ish: {
     "id": "amiga_house_95ish",
     "displayName": "Amiga House 95ish",
-    "version": "0.1.0",
+    "version": "1.2.0",
     "tempo": {
       "minBpm": 118,
       "maxBpm": 138,
@@ -325,7 +325,7 @@ export const builtInProfileData: Record<BuiltInProfileName, AlgoWasmProfile> = {
   downtempoBreakbeat: {
     "id": "downtempo_breakbeat",
     "displayName": "Downtempo Breakbeat",
-    "version": "0.1.0",
+    "version": "1.2.0",
     "tempo": {
       "minBpm": 88,
       "maxBpm": 112,
@@ -641,7 +641,7 @@ export const builtInProfileData: Record<BuiltInProfileName, AlgoWasmProfile> = {
   dubDeepHouse: {
     "id": "dub_deep_house",
     "displayName": "Dub Deep House",
-    "version": "0.1.0",
+    "version": "1.2.0",
     "tempo": {
       "minBpm": 118,
       "maxBpm": 124,
@@ -957,7 +957,7 @@ export const builtInProfileData: Record<BuiltInProfileName, AlgoWasmProfile> = {
   dubstep: {
     "id": "dubstep",
     "displayName": "Dubstep",
-    "version": "0.1.0",
+    "version": "1.2.0",
     "tempo": {
       "minBpm": 138,
       "maxBpm": 146,

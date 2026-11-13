@@ -4,11 +4,11 @@ version = 3
 
 [[package]]
 name = "algo-wasm-core"
-version = "0.1.0"
+version = "1.2.0"
 
 [[package]]
 name = "algo-wasm-ffi"
-version = "0.1.0"
+version = "1.2.0"
 dependencies = [
  "algo-wasm-core",
 ]
