@@ -2,7 +2,7 @@ use crate::builtin::amiga_house_95ish;
 use crate::composition::{
   instrument_note_for_track, ArrangementGenerator, Chord, NoteStep, PatternBank, STEPS_PER_BAR
 };
-use crate::dsp::{DcBlocker, Limiter, Reverb, StereoDelay};
+use crate::dsp::{denormal_guard, DcBlocker, Limiter, Reverb, StereoDelay};
 use crate::export::write_midi;
 use crate::genome::SongGenome;
 use crate::profile::{Patch, Profile, ProfileError};
@@ -170,6 +170,7 @@ pub struct Engine {
   dc_right: DcBlocker,
   limiter: Limiter,
   events: Vec<MusicEvent>,
+  events_this_block: usize,
   metrics: EngineMetrics
 }
 
@@ -244,6 +245,7 @@ impl Engine {
       // Allocated once at the largest size a profile may ask for, so that
       // changing profile never allocates.
       events: Vec::with_capacity(crate::profile::MAX_EVENTS_LIMIT),
+      events_this_block: 0,
       metrics: EngineMetrics::default(),
       profile
     })
@@ -284,6 +286,9 @@ impl Engine {
   }
 
   /// Re-seeds the engine and regenerates the song identity and material.
+  ///
+  /// The song restarts from its first bar. Playback carries on if it was
+  /// running, so changing seed or profile mid-song does not fall silent.
   pub fn set_seed(&mut self, seed: u64) {
     self.seed = seed;
     self.rng = Rng64::new(seed);
@@ -302,10 +307,13 @@ impl Engine {
       self.genome.home_key,
       self.energy
     );
+    let was_playing = self.playing;
     self.stop();
+    self.playing = was_playing;
   }
 
-  /// Applies a new profile and restarts the song from its first bar.
+  /// Applies a new profile and restarts the song from its first bar, keeping
+  /// the play state.
   pub fn set_profile(&mut self, profile: Profile) -> Result<(), EngineError> {
     profile.validate()?;
 
@@ -391,6 +399,8 @@ impl Engine {
   /// `clear_events` is called, so a caller that reads them less often than it
   /// renders does not lose any.
   pub fn render_interleaved(&mut self, output: &mut [f32]) {
+    self.events_this_block = 0;
+
     if output.is_empty() {
       return;
     }
@@ -708,6 +718,13 @@ impl Engine {
 
       let mono = voice.render(patch, automation.cutoff[index], &self.genome.drums, &context);
 
+      // The carried tail of a reused voice belongs to the note it replaced,
+      // so it is mixed in whatever the new track's mute, level, or sends are.
+      left += voice.tail_left;
+      right += voice.tail_right;
+      voice.tail_left = denormal_guard(voice.tail_left * voice.tail_decay);
+      voice.tail_right = denormal_guard(voice.tail_right * voice.tail_decay);
+
       if !audible {
         continue;
       }
@@ -738,7 +755,12 @@ impl Engine {
   }
 
   fn push_event(&mut self, event: MusicEvent) {
-    if self.events.len() < self.profile.limits.max_events_per_block {
+    // `maxEventsPerBlock` limits each render call, as it always has. The
+    // buffer itself can hold several calls' worth until it is drained.
+    if self.events_this_block < self.profile.limits.max_events_per_block
+      && self.events.len() < crate::profile::MAX_EVENTS_LIMIT
+    {
+      self.events_this_block += 1;
       self.events.push(event);
     } else {
       self.metrics.dropped_events = self.metrics.dropped_events.saturating_add(1);
@@ -984,6 +1006,21 @@ mod tests {
     engine.render_interleaved(&mut output);
 
     assert!(output.iter().all(|sample| *sample == 0.0));
+  }
+
+  #[test]
+  fn changing_seed_or_profile_keeps_playing() -> Result<(), EngineError> {
+    let mut engine = Engine::new(48_000, 5, amiga_house_95ish())?;
+    engine.start();
+    engine.set_seed(6);
+    engine.set_profile(crate::builtin::dubstep())?;
+    let mut output = vec![0.0; 4_096 * 2];
+    engine.render_interleaved(&mut output);
+
+    assert!(engine.snapshot().is_playing);
+    assert_eq!(engine.snapshot().current_bar, 0);
+    assert!(output.iter().any(|sample| sample.abs() > 0.0001));
+    Ok(())
   }
 
   #[test]

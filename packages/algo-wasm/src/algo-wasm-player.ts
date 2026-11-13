@@ -1,6 +1,6 @@
-import { AlgoWasmError } from './AlgoWasmError.js';
+import { AlgoWasmError } from './algo-wasm-error.js';
 import { AlgoWasmEventEmitter } from './events.js';
-import { AlgoWasmEngineBinding, instantiateAlgoWasm, moodIndex, trackIndex } from './loadWasm.js';
+import { AlgoWasmEngineBinding, instantiateAlgoWasm, moodIndex, trackIndex } from './load-wasm.js';
 import { builtInProfiles, normaliseSeed, splitSeed, validateProfile } from './profile.js';
 import { encodeProfile } from './profile-wire.js';
 import { decodeEvents, decodeSnapshot } from './wire-decode.js';
@@ -288,8 +288,8 @@ export class AlgoWasmPlayer {
   }
 
   /**
-   * Changes the seed, which selects a different song. Playback stops; call
-   * `start` to hear the new song.
+   * Changes the seed, which selects a different song. The new song starts
+   * from its first bar, and keeps playing if the player was playing.
    *
    * @throws {AlgoWasmError} With code `profile_invalid` for a malformed seed.
    */
@@ -300,16 +300,22 @@ export class AlgoWasmPlayer {
   }
 
   /**
-   * Changes the profile. Playback stops and the song restarts from its first
-   * bar; call `start` to hear it.
+   * Changes the profile. The song restarts from its first bar, and keeps
+   * playing if the player was playing.
    *
    * @throws {AlgoWasmError} With code `profile_invalid`.
    */
   setProfile(profile: AlgoWasmProfile): void {
-    this.profile = validateProfile(profile);
-    // A profile carries its own tempo range, which replaces any override.
-    this.tempoRange = undefined;
-    this.postLiveCommand('set-profile', { profile: encodeProfile(this.profile) });
+    const validated = validateProfile(profile);
+
+    // The engine can still refuse a valid profile, for example when its
+    // sample rate limits exclude this AudioContext. The player only adopts
+    // the profile once the engine has, so offline renders match playback.
+    this.postLiveCommand('set-profile', { profile: encodeProfile(validated) }, () => {
+      this.profile = validated;
+      // A profile carries its own tempo range, which replaces any override.
+      this.tempoRange = undefined;
+    });
   }
 
   /** Sets master volume. Values are clamped to 0 to 1. */
@@ -381,8 +387,11 @@ export class AlgoWasmPlayer {
       throw new RangeError('Expected minBpm to be less than or equal to maxBpm.');
     }
 
-    this.tempoRange = { minBpm, maxBpm };
-    this.postLiveCommand('set-tempo-range', { minBpm, maxBpm });
+    // Remembered only once the engine accepts it. A range outside the
+    // profile's limits must not be replayed into later offline renders.
+    this.postLiveCommand('set-tempo-range', { minBpm, maxBpm }, () => {
+      this.tempoRange = { minBpm, maxBpm };
+    });
   }
 
   /** Returns a copy of the most recent engine state. */
@@ -574,12 +583,20 @@ export class AlgoWasmPlayer {
     await ready;
   }
 
-  private postLiveCommand(type: string, payload: Record<string, unknown>): void {
+  /**
+   * Sends a command without waiting for it. A failure is reported through
+   * the `error` event. `onAccepted` runs only if the engine accepts it.
+   */
+  private postLiveCommand(
+    type: string,
+    payload: Record<string, unknown>,
+    onAccepted?: () => void
+  ): void {
     if (this.destroyed) {
       throw new AlgoWasmError('destroyed', 'AlgoWASM player has been destroyed.');
     }
 
-    void this.sendCommand(type, payload).catch(error => {
+    void this.sendCommand(type, payload).then(onAccepted).catch(error => {
       this.emitter.emit('error', error instanceof Error ? error : new Error(String(error)));
     });
   }

@@ -39,9 +39,9 @@ The release build uses `opt-level = "s"`. Against `opt-level = 3` it is about 10
 
 | File | 1.1.0 | 1.2.0 | 1.2.0 gzipped |
 | --- | --- | --- | --- |
-| `algo_wasm.wasm` | 347,263 bytes | 103,323 bytes | 46,881 bytes |
-| `index.js` | not bundled | 35,057 bytes | 9,396 bytes |
-| `worklet/algo-worklet.js` | not bundled | 7,494 bytes | 2,370 bytes |
+| `algo_wasm.wasm` | 347,263 bytes | 103,718 bytes | 47,080 bytes |
+| `index.js` | not bundled | 35,077 bytes | 9,411 bytes |
+| `worklet/algo-worklet.js` | not bundled | 7,531 bytes | 2,386 bytes |
 
 ## Practical targets
 

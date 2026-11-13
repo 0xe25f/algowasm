@@ -1,4 +1,4 @@
-import { AlgoWasmError } from './AlgoWasmError.js';
+import { AlgoWasmError } from './algo-wasm-error.js';
 import { builtInProfileData } from './built-in-profiles.js';
 import {
   MAX_SCALE_WEIGHT,

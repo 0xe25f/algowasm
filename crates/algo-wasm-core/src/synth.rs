@@ -103,6 +103,14 @@ pub struct Voice {
   /// Left and right mix gains, refreshed by the engine every few samples.
   pub mix_left: f32,
   pub mix_right: f32,
+  /// What is left of the previous note's output when this voice was reused,
+  /// already mixed to left and right. The engine fades it out to avoid a click.
+  pub tail_left: f32,
+  pub tail_right: f32,
+  /// Per-sample multiplier that fades the carried tail over a few milliseconds.
+  pub tail_decay: f32,
+  /// The most recent sample this voice produced, before mixing.
+  pub last_output: f32,
   noise_state: u32,
   filter: OnePole,
   tone_filter: Svf,
@@ -111,10 +119,7 @@ pub struct Voice {
   sustain: f32,
   detune_ratio: f32,
   filter_env_decay: f32,
-  cutoff_mod: f32,
-  last_output: f32,
-  declick: f32,
-  declick_decay: f32
+  cutoff_mod: f32
 }
 
 impl Voice {
@@ -136,6 +141,10 @@ impl Voice {
       spread: 0.0,
       mix_left: 0.0,
       mix_right: 0.0,
+      tail_left: 0.0,
+      tail_right: 0.0,
+      tail_decay: 0.0,
+      last_output: 0.0,
       noise_state: 1,
       filter: OnePole::new(),
       tone_filter: Svf::new(),
@@ -144,10 +153,7 @@ impl Voice {
       sustain: 0.0,
       detune_ratio: 1.0,
       filter_env_decay: 1.0,
-      cutoff_mod: 1.0,
-      last_output: 0.0,
-      declick: 0.0,
-      declick_decay: 0.0
+      cutoff_mod: 1.0
     }
   }
 
@@ -167,10 +173,16 @@ impl Voice {
 
   /// Starts this voice, replacing whatever it was playing.
   pub fn start(&mut self, start: VoiceStart, patch: &Patch, sample_rate: f32) {
-    // A reused voice may still be sounding. Carrying its last output forward
-    // and fading it over a few milliseconds avoids a click at the changeover.
-    self.declick = if self.active { self.last_output } else { 0.0 };
-    self.declick_decay = (-1.0 / (sample_rate * 0.003)).exp();
+    // A reused voice may still be sounding. Its last output is carried
+    // forward as a tail and faded over a few milliseconds, which avoids a
+    // click at the changeover. The tail keeps the old note's own mix gains,
+    // because the new note may belong to a different track.
+    if self.active {
+      self.tail_left += self.last_output * self.mix_left;
+      self.tail_right += self.last_output * self.mix_right;
+    }
+
+    self.tail_decay = (-1.0 / (sample_rate * 0.003)).exp();
 
     let to_samples = |ms: f32| (ms / 1_000.0 * sample_rate).max(1.0);
 
@@ -215,7 +227,9 @@ impl Voice {
   /// Ends the voice quickly but smoothly. A closed hi-hat uses this to cut
   /// off a ringing open hi-hat, as the two are one instrument.
   pub fn choke(&mut self, sample_rate: f32) {
-    if self.active {
+    // A voice already in its release tail is left alone. Restarting the
+    // fade there would jump its level back up before bringing it down.
+    if self.active && self.age_samples < self.duration_samples {
       self.duration_samples = self.age_samples;
       self.release_samples = (sample_rate * 0.012) as u32;
     }
@@ -252,9 +266,7 @@ impl Voice {
       self.active = false;
     }
 
-    let output = shaped * patch.gain * self.velocity + self.declick;
-    self.declick = denormal_guard(self.declick * self.declick_decay);
-    self.last_output = denormal_guard(output);
+    self.last_output = denormal_guard(shaped * patch.gain * self.velocity);
     self.last_output
   }
 

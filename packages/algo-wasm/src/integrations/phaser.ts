@@ -1,4 +1,4 @@
-import type { AlgoWasmPlayer } from '../AlgoWasmPlayer.js';
+import type { AlgoWasmPlayer } from '../algo-wasm-player.js';
 
 /** The parts of a Phaser scene this integration reads. */
 export interface PhaserLikeScene {

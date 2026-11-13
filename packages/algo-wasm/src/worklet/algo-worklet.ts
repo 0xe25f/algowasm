@@ -195,9 +195,8 @@ class AlgoWasmProcessor extends AudioWorkletProcessor {
         this.playing = false;
         return undefined;
       case 'set-seed':
+        // The song restarts from its first bar and keeps its play state.
         engine.setSeedParts(command.seedHigh ?? 0, command.seedLow ?? 1);
-        // Re-seeding stops the engine, so playback must be started again.
-        this.playing = false;
         return undefined;
       case 'set-profile':
         if (!command.profile) {
@@ -205,7 +204,6 @@ class AlgoWasmProcessor extends AudioWorkletProcessor {
         }
 
         engine.setProfileWire(command.profile);
-        this.playing = false;
         return undefined;
       case 'set-volume':
         engine.setVolume(command.value ?? 0.8);

@@ -293,7 +293,16 @@ impl StereoDelay {
       seconds *= 0.5;
     }
 
-    self.length = ((seconds * sample_rate) as usize).clamp(1, self.left.len());
+    let length = ((seconds * sample_rate) as usize).clamp(1, self.left.len());
+
+    // A longer delay starts reading slots last written under an older
+    // setting. They are cleared so no stale echo is heard.
+    if length > self.length {
+      self.left[self.length..length].fill(0.0);
+      self.right[self.length..length].fill(0.0);
+    }
+
+    self.length = length;
   }
 
   /// Sets the feedback amount.

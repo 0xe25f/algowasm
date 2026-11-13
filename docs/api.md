@@ -53,7 +53,7 @@ Track ids are `kick`, `snare`, `closed_hat`, `open_hat`, `percussion`, `bass`, `
 
 Moods are `dark`, `bright`, `tense`, and `calm`.
 
-`setSeed()` and `setProfile()` stop playback and rewind the song. Call `start()` again to hear the result.
+`setSeed()` and `setProfile()` restart the song from its first bar. If the player was playing, it keeps playing.
 
 Invalid arguments throw straight away:
 
@@ -131,4 +131,4 @@ try {
 }
 ```
 
-`events()` returns the events generated since its last call and removes them from the engine's buffer. The buffer holds up to `limits.maxEventsPerBlock` events, so read it at least that often.
+`events()` returns the events generated since its last call and removes them from the engine's buffer. The buffer holds up to 512 events, so read it often enough that it does not fill.

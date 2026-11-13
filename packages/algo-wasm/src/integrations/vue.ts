@@ -1,4 +1,4 @@
-import type { AlgoWasmPlayer } from '../AlgoWasmPlayer.js';
+import type { AlgoWasmPlayer } from '../algo-wasm-player.js';
 import type { AlgoWasmSnapshot } from '../types.js';
 
 /** The handle returned by `createAlgoWasmVueBridge`. */

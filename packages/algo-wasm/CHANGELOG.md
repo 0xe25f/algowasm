@@ -26,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Master volume is applied after the limiter.
 - `AlgoWasmEngineBinding.events()` returns the events since its last call, not only those of the last rendered block.
 - `limits.maxVoices` is honoured. It was validated but ignored before.
+- `limits.maxEventsPerBlock` still limits events per rendered block. The engine now also holds up to 512 events between reads.
 
 ### Fixed
 
@@ -36,6 +37,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A destroyed player's worklet processor kept running inside a caller-owned `AudioContext`.
 - `setTempoRange(NaN, NaN)` crashed the engine.
 - A profile with a very large `limits.maxEventsPerBlock` could exhaust memory.
+- `setSeed` and `setProfile` silenced a playing song until `start` was called again. The song now restarts from its first bar and keeps playing.
 - Closed hi-hats now cut off a ringing open hi-hat.
 - The one-pole filter used a wrong coefficient, so the effects sweep differed between sample rates.
 
@@ -44,7 +46,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 No exported name was removed or renamed. These inputs were accepted before and are now rejected:
 
 - Unknown scale names. They used to fall back to natural minor without warning. Use `natural_minor`, `dorian`, `aeolian`, `phrygian_dominant`, or `minor_pentatonic`.
-- Out-of-range `chordRules.cadenceWeight`, `chordRules.movementWeight` (0 to 4), `melodyRules.maxRangeSemitones` (1 to 48), `limits.maxEventsPerBlock` (1 to 512), envelope times above 10,000 ms, more than eight scales, and section lengths above 64 bars.
+- Out-of-range `chordRules.cadenceWeight`, `chordRules.movementWeight` (0 to 4), `melodyRules.maxRangeSemitones` (1 to 48), `limits.maxEventsPerBlock` (1 to 512), envelope times above 10,000 ms, more than eight scales, scale weights above 1,000,000, `limits.minBpm` or `limits.maxBpm` outside 1 to 1000, and section lengths above 64 bars.
 - `setMood`, `setMuted`, and `setSolo` throw a `TypeError` for an unknown id, and `setTempoRange` throws for values that are not finite and ordered. They used to report through the `error` event.
 - `renderOffline` throws a `RangeError` for `seconds` outside 0 to 600 or an unsupported `sampleRate`.
 

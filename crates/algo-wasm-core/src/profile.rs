@@ -490,6 +490,10 @@ impl Profile {
       ));
     }
 
+    if !in_range(self.limits.min_bpm, 1.0, 1_000.0) || !in_range(self.limits.max_bpm, 1.0, 1_000.0) {
+      return Err(ProfileError::new("Profile tempo limits must be between 1 and 1000 BPM."));
+    }
+
     let tempo_inside_limits =
       self.tempo.min_bpm >= self.limits.min_bpm && self.tempo.max_bpm <= self.limits.max_bpm;
 

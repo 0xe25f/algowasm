@@ -131,6 +131,7 @@ Profile validation enforces:
 - filter cutoff between 20 and 20,000 Hz, and envelope times up to 10,000 ms;
 - `chordRules.cadenceWeight` and `movementWeight` between 0 and 4;
 - `melodyRules.maxRangeSemitones` a whole number from 1 to 48;
+- `limits.minBpm` and `limits.maxBpm` between 1 and 1000;
 - `limits.maxEventsPerBlock` a whole number from 1 to 512, `limits.maxVoices` from 1 to 64, and `limits.maxTracks` exactly 11;
 - exactly one patch and one mixer entry per built-in track;
 - sample rate limits between 22,050 and 96,000 Hz;

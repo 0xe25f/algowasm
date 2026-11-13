@@ -1,4 +1,4 @@
-import { AlgoWasmError } from './AlgoWasmError.js';
+import { AlgoWasmError } from './algo-wasm-error.js';
 import { EngineCore } from './engine-core.js';
 import { splitSeed, validateProfile } from './profile.js';
 import { encodeProfile, WIRE_MOODS, WIRE_TRACK_IDS } from './profile-wire.js';
@@ -185,8 +185,8 @@ export class AlgoWasmEngineBinding extends EngineCore {
 
   /**
    * Returns the events generated since the last call, and removes them from
-   * the engine's buffer. The buffer holds up to the profile's
-   * `limits.maxEventsPerBlock` events, so call this at least that often.
+   * the engine's buffer. The buffer holds up to 512 events, so call this
+   * often enough that it does not fill.
    */
   events(): AlgoWasmGeneratedEvent[] {
     const wire = this.copyEvents();

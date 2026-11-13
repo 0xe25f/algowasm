@@ -1,7 +1,7 @@
-export { AlgoWasmError } from './AlgoWasmError.js';
-export { AlgoWasmPlayer } from './AlgoWasmPlayer.js';
+export { AlgoWasmError } from './algo-wasm-error.js';
+export { AlgoWasmPlayer } from './algo-wasm-player.js';
 export { AlgoWasmEventEmitter } from './events.js';
-export { AlgoWasmEngineBinding, instantiateAlgoWasm } from './loadWasm.js';
+export { AlgoWasmEngineBinding, instantiateAlgoWasm } from './load-wasm.js';
 export { builtInProfiles, cloneProfile, normaliseSeed, splitSeed, trackIds, validateProfile } from './profile.js';
 export type {
   AlgoWasmArrangementRules,

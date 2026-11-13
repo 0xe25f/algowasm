@@ -1,4 +1,4 @@
-import { AlgoWasmError } from './AlgoWasmError.js';
+import { AlgoWasmError } from './algo-wasm-error.js';
 import { EVENT_WIRE_SIZE, SNAPSHOT_WIRE_LENGTH } from './wire-decode.js';
 
 type WasmFn = (...args: number[]) => number;
@@ -85,12 +85,18 @@ export class EngineCore {
     this.callEngine('algo_wasm_engine_stop');
   }
 
-  /** Re-seeds the engine from the two halves of a 64-bit seed. */
+  /**
+   * Re-seeds the engine from the two halves of a 64-bit seed. The song
+   * restarts from its first bar and keeps its play state.
+   */
   setSeedParts(seedHigh: number, seedLow: number): void {
     this.callEngine('algo_wasm_engine_set_seed', seedHigh, seedLow);
   }
 
-  /** Replaces the profile, given in the flat layout, and restarts the song. */
+  /**
+   * Replaces the profile, given in the flat layout. The song restarts from
+   * its first bar and keeps its play state.
+   */
   setProfileWire(profile: Float32Array): void {
     this.ensureEngine();
     const pointer = this.writeProfile(profile);

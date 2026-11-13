@@ -1,4 +1,4 @@
-import type { AlgoWasmPlayer } from '../AlgoWasmPlayer.js';
+import type { AlgoWasmPlayer } from '../algo-wasm-player.js';
 import type { AlgoWasmSnapshot } from '../types.js';
 
 /** A store that follows Svelte's readable store contract. */
