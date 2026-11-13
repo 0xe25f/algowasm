@@ -6,6 +6,55 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [1.2.0] - 2026-11-13
+
+### Added
+
+- A `dubstep` built-in profile: half-time drums, a sustained sine sub bass, sparse mids, and a tempo-locked wobble.
+- A stereo reverb, fed by each patch's `reverbSend`. Earlier releases sent `reverbSend` to the delay.
+- Kick ducking, a second detuned oscillator, a filter envelope, a tempo-synced filter LFO, and stereo width, through the optional patch fields `duck`, `detuneCents`, `filterEnvOctaves`, `filterEnvDecayMs`, `lfoRate`, `lfoDepth`, and `width`.
+- Optional `rhythmRules.halfTimeChance` and `bassRules.sustainChance`.
+- `exportMidi({ downloadName })` now offers the file as a download. The option was accepted but ignored before.
+- `profiles/*.json` as the single source for built-in profiles, with `npm run generate:profiles`.
+- A redesigned demo site with a live note view and shareable song links, and a game guide for LittleJS and three.js.
+
+### Changed
+
+- Sound: the master waveshaper is replaced by a look-ahead limiter, the delay is tempo-synced, oscillators are band-limited, and the built-in profiles are rebalanced so chords, lead, and arp are audible. Every seed still composes the same notes as in 1.1.0, but renders are not sample-identical.
+- The WASM binary is 103 KB, down from 347 KB. The JavaScript is bundled and minified, and source maps are no longer published.
+- The engine has no Rust dependencies. `serde` and `serde_json` are removed, and profiles, snapshots, and events cross the WASM boundary as numeric buffers.
+- `renderOffline` applies the player's live volume, energy, intensity, mood, tempo range, mutes, and solos, yields to the page while rendering, and reuses the compiled module.
+- Master volume is applied after the limiter.
+- `AlgoWasmEngineBinding.events()` returns the events since its last call, not only those of the last rendered block.
+- `limits.maxVoices` is honoured. It was validated but ignored before.
+- `limits.maxEventsPerBlock` still limits events per rendered block. The engine now also holds up to 512 events between reads.
+
+### Fixed
+
+- About 94% of `beat`, `bar`, and `section-change` events never reached JavaScript. Every event is now delivered.
+- The delay send multiplied the whole mix by a level instead of sending each track's own signal, which distorted the mix.
+- Notes clicked at release, on retrigger, and when a voice was reused. Release times longer than 80 ms were cut short.
+- `AlgoWasmPlayer.create` left a connected node and an open `AudioContext` behind when loading failed.
+- A destroyed player's worklet processor kept running inside a caller-owned `AudioContext`.
+- `setTempoRange(NaN, NaN)` crashed the engine.
+- A profile with a very large `limits.maxEventsPerBlock` could exhaust memory.
+- `setSeed` and `setProfile` silenced a playing song until `start` was called again. The song now restarts from its first bar and keeps playing.
+- Closed hi-hats now cut off a ringing open hi-hat.
+- The one-pole filter used a wrong coefficient, so the effects sweep differed between sample rates.
+
+### Migration
+
+No exported name was removed or renamed. These inputs were accepted before and are now rejected:
+
+- Unknown scale names. They used to fall back to natural minor without warning. Use `natural_minor`, `dorian`, `aeolian`, `phrygian_dominant`, or `minor_pentatonic`.
+- Out-of-range `chordRules.cadenceWeight`, `chordRules.movementWeight` (0 to 4), `melodyRules.maxRangeSemitones` (1 to 48), `limits.maxEventsPerBlock` (1 to 512), envelope times above 10,000 ms, more than eight scales, scale weights above 1,000,000, `limits.minBpm` or `limits.maxBpm` outside 1 to 1000, and section lengths above 64 bars.
+- `setMood`, `setMuted`, and `setSolo` throw a `TypeError` for an unknown id, and `setTempoRange` throws for values that are not finite and ordered. They used to report through the `error` event.
+- `renderOffline` throws a `RangeError` for `seconds` outside 0 to 600 or an unsupported `sampleRate`.
+
+The WASM file and the JavaScript must come from the same release. A mismatch is reported as an error when the engine is created.
+
+The Rust crate `algo-wasm-core` is not published, but if you depend on it by path: `Profile::from_json`, `Profile::to_json`, `Engine::snapshot_json`, and `Engine::current_events_json` are removed. Use `Profile::from_wire`, `Snapshot::to_wire`, and `Engine::drain_events`.
+
 ## [1.1.0] - 2026-09-23
 
 ### Added

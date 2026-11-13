@@ -1,5 +1,5 @@
 use crate::genome::{has_step, rotate_steps, ArpShape, BassLine, FillStyle, Motif, SongGenome};
-use crate::profile::{ChordRules, Profile};
+use crate::profile::{ChordRules, Profile, MAX_SCALES};
 use crate::rng::Rng64;
 use crate::types::{SectionKind, TrackId};
 
@@ -213,10 +213,13 @@ impl PatternBank {
 fn section_length(rng: &mut Rng64, profile: &Profile) -> u8 {
   let min_bars = profile.arrangement_rules.min_section_bars;
   let max_bars = profile.arrangement_rules.max_section_bars;
-  let phrase_lengths: Vec<u8> = (min_bars..=max_bars).filter(|bars| bars % 4 == 0).collect();
+  // Whole phrases are the multiples of four inside the range. They are
+  // counted rather than collected, so this never allocates on the audio thread.
+  let first_phrase = min_bars.div_ceil(4).saturating_mul(4);
 
-  if !phrase_lengths.is_empty() {
-    return phrase_lengths[rng.range_usize(phrase_lengths.len())];
+  if first_phrase <= max_bars {
+    let count = usize::from((max_bars - first_phrase) / 4) + 1;
+    return first_phrase + (rng.range_usize(count) as u8) * 4;
   }
 
   let span = max_bars.saturating_sub(min_bars).saturating_add(1);
@@ -352,14 +355,19 @@ pub enum ScaleKind {
 }
 
 impl ScaleKind {
-  /// Converts a profile scale id into a scale.
-  pub fn from_profile_id(value: &str) -> Self {
+  /// Converts a numeric scale id from the flat profile layout into a scale.
+  ///
+  /// The ids follow the order natural_minor, dorian, aeolian,
+  /// phrygian_dominant, minor_pentatonic. Unknown ids are rejected rather
+  /// than replaced with a default.
+  pub fn from_index(value: f32) -> Option<Self> {
     match value {
-      "dorian" => ScaleKind::Dorian,
-      "aeolian" => ScaleKind::Aeolian,
-      "phrygian_dominant" => ScaleKind::PhrygianDominant,
-      "minor_pentatonic" => ScaleKind::MinorPentatonic,
-      _ => ScaleKind::NaturalMinor
+      0.0 => Some(ScaleKind::NaturalMinor),
+      1.0 => Some(ScaleKind::Dorian),
+      2.0 => Some(ScaleKind::Aeolian),
+      3.0 => Some(ScaleKind::PhrygianDominant),
+      4.0 => Some(ScaleKind::MinorPentatonic),
+      _ => None
     }
   }
 
@@ -440,17 +448,19 @@ impl ScalePicker {
 
   /// Picks a root and scale.
   pub fn pick(rng: &mut Rng64, profile: &Profile) -> Key {
-    let weights: Vec<u32> = profile.scales.iter().map(|scale| scale.weight).collect();
-    let scale_index = rng.weighted_index(&weights);
-    let scale_name = profile
-      .scales
-      .get(scale_index)
-      .map(|scale| scale.name.as_str())
-      .unwrap_or("natural_minor");
+    let scales = profile.active_scales();
+    let mut weights = [0u32; MAX_SCALES];
+
+    for (weight, rule) in weights.iter_mut().zip(scales) {
+      *weight = rule.weight;
+    }
+
+    let scale_index = rng.weighted_index(&weights[..scales.len()]);
+    let scale = scales.get(scale_index).map(|rule| rule.scale).unwrap_or_default();
 
     Key {
       root: Self::LOWEST_ROOT + rng.range_usize(12) as i16,
-      scale: ScaleKind::from_profile_id(scale_name)
+      scale
     }
   }
 }
@@ -485,8 +495,7 @@ impl ChordGrammar {
   /// back towards, the tonic. `movementWeight` favours progressions with more
   /// distinct chords.
   pub fn pick_progression(rng: &mut Rng64, rules: ChordRules) -> [u8; 4] {
-    let weights: Vec<u32> = PROGRESSIONS
-      .iter()
+    let weights = PROGRESSIONS
       .map(|progression| {
         let last = progression[3];
         let cadence = match last {
@@ -506,8 +515,7 @@ impl ChordGrammar {
         let movement = (distinct as f32 - 1.0) / 3.0;
         let score = 0.4 + rules.cadence_weight * cadence + rules.movement_weight * movement;
         (score * 100.0).max(1.0) as u32
-      })
-      .collect();
+      });
 
     PROGRESSIONS[rng.weighted_index(&weights)]
   }
@@ -813,7 +821,9 @@ impl BasslineGenerator {
       let slide = has_step(line.slides, step);
       let velocity = if accent { 0.88 } else { 0.58 + context.energy * 0.24 };
       let gap = next_onset_gap(line.onsets, step);
-      let length = gap.min(context.genome.bass_gate).max(1) + u8::from(slide);
+      // A sustained bass holds each note until the next one starts.
+      let gate = if context.genome.bass_sustain { gap } else { context.genome.bass_gate };
+      let length = gap.min(gate).max(1) + u8::from(slide);
 
       bar.bass[step] = Some(NoteStep::new(note, velocity, length, accent, slide));
     }
@@ -1171,10 +1181,14 @@ impl ArrangementGenerator {
       Transition => &[(Drop, 0.5 + high * 0.2), (GrooveA, 0.4)],
       Reset => &[(Intro, 1.0)]
     };
-    let weights: Vec<u32> =
-      options.iter().map(|(_, weight)| (weight * 100.0).max(1.0) as u32).collect();
+    // No section has more than four possible successors.
+    let mut weights = [0u32; 4];
 
-    options[rng.weighted_index(&weights)].0
+    for (slot, (_, weight)) in weights.iter_mut().zip(options) {
+      *slot = (weight * 100.0).max(1.0) as u32;
+    }
+
+    options[rng.weighted_index(&weights[..options.len()])].0
   }
 }
 
@@ -1208,7 +1222,7 @@ pub fn instrument_note_for_track(track: TrackId, note: NoteStep) -> NoteStep {
 mod tests {
   use super::{euclidean, ArrangementGenerator, BarPattern, Key, PatternBank, STEPS_PER_BAR};
   use crate::genome::SongGenome;
-  use crate::profile::{amiga_house_95ish, downtempo_breakbeat, dub_deep_house};
+  use crate::builtin::{amiga_house_95ish, downtempo_breakbeat, dub_deep_house};
   use crate::rng::Rng64;
   use crate::types::SectionKind;
   use std::collections::HashSet;

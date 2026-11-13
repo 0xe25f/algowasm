@@ -61,6 +61,12 @@ export interface AlgoWasmRhythmRules {
   hatDensity: number;
   percussionDensity: number;
   fillChance: number;
+  /**
+   * Chance, from 0 to 1, that a broken-beat song puts its snare on beat
+   * three only, for a half-time feel. Ignored when `kickDensity` is 1.
+   * Defaults to 0.3.
+   */
+  halfTimeChance?: number;
 }
 
 export interface AlgoWasmBassRules {
@@ -68,6 +74,11 @@ export interface AlgoWasmBassRules {
   slideChance: number;
   accentChance: number;
   octaveJumpChance: number;
+  /**
+   * Chance, from 0 to 1, that a song holds each bass note until the next one
+   * starts instead of using a short gate. Defaults to 0.
+   */
+  sustainChance?: number;
 }
 
 export interface AlgoWasmMelodyRules {
@@ -103,6 +114,20 @@ export interface AlgoWasmPatch {
   resonance: number;
   delaySend: number;
   reverbSend: number;
+  /** Detune of a second oscillator, in cents from 0 to 50. Defaults to 0 (off). */
+  detuneCents?: number;
+  /** How far the filter opens at note start, in octaves from 0 to 6. Defaults to 0. */
+  filterEnvOctaves?: number;
+  /** Time the filter envelope takes to close, from 1 to 10000 ms. Defaults to 120. */
+  filterEnvDecayMs?: number;
+  /** Tempo-synced filter LFO rate, in cycles per beat from 0 to 8. Defaults to 0 (off). */
+  lfoRate?: number;
+  /** Filter LFO depth, in octaves from 0 to 4. Defaults to 0. */
+  lfoDepth?: number;
+  /** Stereo spread of the track's notes, from 0 (centred) to 1. Defaults to 0. */
+  width?: number;
+  /** How much each kick ducks this track, from 0 (none) to 1. Defaults to 0. */
+  duck?: number;
 }
 
 export interface AlgoWasmMixerTrackProfile {

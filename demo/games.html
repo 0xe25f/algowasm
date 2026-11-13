@@ -1,0 +1,376 @@
+<!doctype html>
+<html lang="en-GB">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>AlgoWASM game guide: LittleJS and three.js</title>
+    <meta
+      name="description"
+      content="How to add endless generated music to LittleJS and three.js games with AlgoWASM, with complete code."
+    >
+    <link rel="stylesheet" href="./styles.css">
+  </head>
+  <body>
+    <a class="skip-link" href="#guide">Skip to the guide</a>
+
+    <header class="site-header">
+      <a class="brand" href="./" aria-label="AlgoWASM home">
+        <span class="brand-mark" aria-hidden="true"></span>
+        AlgoWASM
+      </a>
+      <nav aria-label="Site">
+        <a href="./">Demo</a>
+        <a href="./games.html" aria-current="page">Game Guide</a>
+        <a href="https://github.com/0xe25f/algowasm/blob/main/docs/getting-started.md">Docs</a>
+      </nav>
+      <a class="star-button" href="https://github.com/0xe25f/algowasm">
+        <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
+          <path
+            d="M8 .25a.75.75 0 0 1 .673.418l1.882 3.815 4.21.612a.75.75 0 0 1 .416 1.279l-3.046 2.97.719 4.192a.75.75 0 0 1-1.088.791L8 12.347l-3.766 1.98a.75.75 0 0 1-1.088-.79l.72-4.194L.818 6.374a.75.75 0 0 1 .416-1.28l4.21-.611L7.327.668A.75.75 0 0 1 8 .25Z"
+          />
+        </svg>
+        Star on GitHub
+      </a>
+    </header>
+
+    <main id="guide" class="guide">
+      <section class="hero" aria-labelledby="title">
+        <p class="eyebrow">Game guide</p>
+        <h1 id="title">Music that reacts to your game.</h1>
+        <p class="lede">
+          AlgoWASM gives a game endless music that follows the action. This guide shows complete
+          set-ups for LittleJS and three.js. The same five steps work in any engine.
+        </p>
+        <ul class="toc" aria-label="On this page">
+          <li><a href="#setup">Set-up</a></li>
+          <li><a href="#pattern">The pattern</a></li>
+          <li><a href="#littlejs">LittleJS</a></li>
+          <li><a href="#threejs">three.js</a></li>
+          <li><a href="#recipes">Recipes</a></li>
+          <li><a href="#licence">Licence</a></li>
+        </ul>
+      </section>
+
+      <section aria-labelledby="setup">
+        <h2 id="setup">Set-up</h2>
+        <p>Install the package:</p>
+        <pre><code>npm install @algo-wasm/algo-wasm</code></pre>
+        <p>
+          The engine needs two files to be served by your site. Copy them from the package into
+          the folder your game serves static files from, usually <code>public/</code>:
+        </p>
+        <pre><code>cp node_modules/@algo-wasm/algo-wasm/dist/algo_wasm.wasm public/
+cp node_modules/@algo-wasm/algo-wasm/dist/worklet/algo-worklet.js public/</code></pre>
+        <ul>
+          <li>
+            Serve <code>.wasm</code> files as <code>application/wasm</code>. Most servers and
+            hosts already do.
+          </li>
+          <li>
+            Run the game from an HTTP server, not from a <code>file://</code> address. Vite,
+            <code>npx serve</code>, and GitHub Pages all work.
+          </li>
+        </ul>
+      </section>
+
+      <section aria-labelledby="pattern">
+        <h2 id="pattern">The pattern</h2>
+        <ol>
+          <li>
+            <strong>Create one player</strong> when the game loads. If your engine already has an
+            <code>AudioContext</code>, pass it in so music and sound effects share one.
+          </li>
+          <li>
+            <strong>Start on the first input.</strong> Browsers block audio until the player
+            clicks, taps, or presses a key.
+          </li>
+          <li>
+            <strong>Feed it game state.</strong> Map danger, speed, or progress to
+            <code>setEnergy()</code> and <code>setIntensity()</code>. Send a value only when it
+            has changed, not on every frame.
+          </li>
+          <li>
+            <strong>Listen for beats.</strong> Use <code>beat</code>, <code>bar</code>, and
+            <code>section-change</code> events to time visuals and gameplay.
+          </li>
+          <li>
+            <strong>Pause and clean up.</strong> Call <code>pause()</code> with the game, and
+            <code>destroy()</code> when the game is torn down. <code>destroy()</code> frees the
+            engine's memory.
+          </li>
+        </ol>
+        <div class="guide-card">
+          <p>
+            Events arrive in small batches about every 21 ms, so a handler can run slightly after
+            the sound. That is fine for flashes and camera kicks. For anything that must be
+            sample-exact, use the <code>sample</code> field each event carries.
+          </p>
+        </div>
+      </section>
+
+      <section aria-labelledby="littlejs">
+        <h2 id="littlejs">LittleJS</h2>
+        <p>
+          LittleJS creates its own <code>AudioContext</code> and exports it as
+          <code>audioContext</code>. Passing it to AlgoWASM keeps one context for the whole game.
+          LittleJS allows <code>gameInit</code> to be asynchronous, so the engine can load there.
+          This example was written against LittleJS 1.30.
+        </p>
+        <pre><code>import {
+  audioContext,
+  drawRect,
+  engineInit,
+  hsl,
+  keyWasPressed,
+  mouseWasPressed,
+  vec2
+} from 'littlejsengine';
+import { AlgoWasmPlayer, builtInProfiles } from '@algo-wasm/algo-wasm';
+
+let music;
+let musicStarted = false;
+let beatPulse = 0;
+let danger = 0;
+let sentEnergy = -1;
+
+async function gameInit() {
+  music = await AlgoWasmPlayer.create({
+    wasmUrl: '/algo_wasm.wasm',
+    workletUrl: '/algo-worklet.js',
+    // Share the context LittleJS made. The player will not close a context
+    // it did not create.
+    audioContext,
+    profile: builtInProfiles.dubstep(),
+    // Use a different seed per level and each level gets its own song.
+    seed: 1995n
+  });
+
+  music.on('beat', () =&gt; {
+    beatPulse = 1;
+  });
+  music.on('error', error =&gt; console.error(error));
+}
+
+function gameUpdate() {
+  // Audio may only start after the player's first click or key press.
+  if (music &amp;&amp; !musicStarted &amp;&amp; (mouseWasPressed(0) || keyWasPressed('Space'))) {
+    musicStarted = true;
+    music.start();
+  }
+
+  // Replace this with your own measure of how tense the game is, from 0 to 1.
+  danger = Math.min(1, danger + 0.0005);
+
+  // Send energy only when it has moved, not sixty times a second.
+  if (music &amp;&amp; Math.abs(danger - sentEnergy) &gt; 0.02) {
+    sentEnergy = danger;
+    music.setEnergy(danger);
+    music.setIntensity(0.4 + danger * 0.6);
+  }
+
+  beatPulse *= 0.9;
+}
+
+function gameRender() {
+  // A square that kicks on every beat.
+  const size = 2 + beatPulse;
+  drawRect(vec2(0, 0), vec2(size, size), hsl(0.48, 0.8, 0.5 + beatPulse * 0.3));
+}
+
+engineInit(gameInit, gameUpdate, () =&gt; {}, gameRender, () =&gt; {});</code></pre>
+
+        <h3>Good to know</h3>
+        <ul>
+          <li>
+            The music plays straight to the speakers, so LittleJS's own volume setting does not
+            change it. Use <code>music.setVolume()</code> for a music slider.
+          </li>
+          <li>
+            To pause the music with the game, call <code>music.pause()</code> and
+            <code>music.resume()</code> wherever you call LittleJS's <code>setPaused()</code>.
+          </li>
+        </ul>
+      </section>
+
+      <section aria-labelledby="threejs">
+        <h2 id="threejs">three.js</h2>
+        <p>
+          If your scene already uses a <code>THREE.AudioListener</code> for sound effects, pass
+          its <code>context</code> to AlgoWASM so both share one <code>AudioContext</code>. If it
+          does not, leave <code>audioContext</code> out and the player creates its own. This
+          example was written against three.js r187.
+        </p>
+        <pre><code>import * as THREE from 'three';
+import { AlgoWasmPlayer, builtInProfiles } from '@algo-wasm/algo-wasm';
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(innerWidth, innerHeight);
+document.body.append(renderer.domElement);
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.1, 100);
+camera.position.z = 4;
+
+const listener = new THREE.AudioListener();
+camera.add(listener);
+
+const cube = new THREE.Mesh(
+  new THREE.BoxGeometry(),
+  new THREE.MeshNormalMaterial()
+);
+scene.add(cube);
+
+const music = await AlgoWasmPlayer.create({
+  wasmUrl: '/algo_wasm.wasm',
+  workletUrl: '/algo-worklet.js',
+  audioContext: listener.context,
+  profile: builtInProfiles.amigaHouse95ish(),
+  seed: 42n
+});
+
+let beatPulse = 0;
+music.on('beat', () =&gt; {
+  beatPulse = 1;
+});
+music.on('section-change', event =&gt; {
+  // A new section is a good moment to change the lighting or the camera.
+  scene.background = new THREE.Color(event.section === 'drop' ? 0x1b1035 : 0x0b0e13);
+});
+music.on('error', error =&gt; console.error(error));
+
+// Audio may only start after a click, tap, or key press.
+let musicStarted = false;
+addEventListener(
+  'pointerdown',
+  () =&gt; {
+    musicStarted = true;
+    music.start();
+  },
+  { once: true }
+);
+
+renderer.setAnimationLoop(() =&gt; {
+  beatPulse *= 0.9;
+  cube.scale.setScalar(1 + beatPulse * 0.35);
+  cube.rotation.y += 0.01;
+  renderer.render(scene, camera);
+});
+
+// Stop the music while the tab is hidden, and carry on when it returns.
+document.addEventListener('visibilitychange', () =&gt; {
+  if (document.hidden) {
+    music.pause();
+  } else if (musicStarted) {
+    music.resume();
+  }
+});</code></pre>
+
+        <h3>Good to know</h3>
+        <ul>
+          <li>
+            The music is a stereo soundtrack, not a positioned sound. It does not pass through
+            <code>THREE.PositionalAudio</code> or the listener's volume.
+          </li>
+          <li>
+            Call <code>await music.destroy()</code> when you dispose of the scene. It leaves the
+            listener's <code>AudioContext</code> open for the rest of your game.
+          </li>
+        </ul>
+      </section>
+
+      <section aria-labelledby="recipes">
+        <h2 id="recipes">Recipes</h2>
+        <div class="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th scope="col">You want</th>
+                <th scope="col">Do this</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>A different song for each level</td>
+                <td><code>music.setSeed(levelNumber)</code>. The same level always gets the same song.</td>
+              </tr>
+              <tr>
+                <td>A different style for each world</td>
+                <td><code>music.setProfile(builtInProfiles.dubDeepHouse())</code></td>
+              </tr>
+              <tr>
+                <td>Calm menus, tense boss fights</td>
+                <td><code>music.setMood('calm')</code> or <code>music.setMood('tense')</code></td>
+              </tr>
+              <tr>
+                <td>Drums drop out when the player hides</td>
+                <td>
+                  <code>music.setMuted('kick', true)</code>, and the same for <code>snare</code>.
+                </td>
+              </tr>
+              <tr>
+                <td>Only the bass during a cutscene</td>
+                <td><code>music.setSolo('bass', true)</code></td>
+              </tr>
+              <tr>
+                <td>A music volume slider</td>
+                <td><code>music.setVolume(value)</code> with a value from 0 to 1.</td>
+              </tr>
+              <tr>
+                <td>Spawn enemies on the bar line</td>
+                <td><code>music.on('bar', spawnWave)</code></td>
+              </tr>
+              <tr>
+                <td>A pre-rendered clip for a trailer</td>
+                <td>
+                  <code>await music.renderOffline({ seconds: 30 })</code> returns the samples
+                  without playing them.
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p>
+          Track names are <code>kick</code>, <code>snare</code>, <code>closed_hat</code>,
+          <code>open_hat</code>, <code>percussion</code>, <code>bass</code>, <code>chords</code>,
+          <code>pad</code>, <code>lead</code>, <code>arp</code>, and <code>fx</code>. The full API
+          is in the
+          <a href="https://github.com/0xe25f/algowasm/blob/main/docs/api.md">API reference</a>.
+        </p>
+      </section>
+
+      <section aria-labelledby="licence">
+        <h2 id="licence">Licence</h2>
+        <div class="guide-card">
+          <p>
+            AlgoWASM is released under the AGPL-3.0-or-later licence. A game that uses it and is
+            distributed, or offered over a network, must make its complete source code available
+            under the same licence. Check that this suits your project before you ship.
+          </p>
+        </div>
+      </section>
+
+      <section class="star-callout" aria-labelledby="star-title">
+        <h2 id="star-title">Shipped something with it?</h2>
+        <p>
+          Star the repository so other game developers can find it, and open an issue to show us
+          what you made.
+        </p>
+        <a class="star-button large" href="https://github.com/0xe25f/algowasm">
+          <svg viewBox="0 0 16 16" width="20" height="20" aria-hidden="true">
+            <path
+              d="M8 .25a.75.75 0 0 1 .673.418l1.882 3.815 4.21.612a.75.75 0 0 1 .416 1.279l-3.046 2.97.719 4.192a.75.75 0 0 1-1.088.791L8 12.347l-3.766 1.98a.75.75 0 0 1-1.088-.79l.72-4.194L.818 6.374a.75.75 0 0 1 .416-1.28l4.21-.611L7.327.668A.75.75 0 0 1 8 .25Z"
+            />
+          </svg>
+          Star AlgoWASM on GitHub
+        </a>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <p>
+        AlgoWASM is released under the AGPL-3.0-or-later licence.
+        <a href="https://github.com/0xe25f/algowasm">Source on GitHub</a>
+      </p>
+    </footer>
+  </body>
+</html>

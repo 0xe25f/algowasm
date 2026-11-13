@@ -10,13 +10,11 @@
     ],
     "strict": true,
     "declaration": true,
-    "declarationMap": true,
-    "sourceMap": true,
     "rootDir": "src",
     "outDir": "dist",
     "skipLibCheck": true,
-    "resolveJsonModule": true,
-    "verbatimModuleSyntax": true
+    "verbatimModuleSyntax": true,
+    "emitDeclarationOnly": true
   },
   "include": [
     "src/**/*.ts"

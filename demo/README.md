@@ -8,10 +8,15 @@ This folder is a GitHub-only artefact. It is not part of the
 [`packages/algo-wasm/package.json`](../packages/algo-wasm/package.json)) and is
 not one of the npm workspaces.
 
-It mirrors [`examples/vanilla`](../examples/vanilla), minus Vite and the
-`@algo-wasm/algo-wasm` package dependency: it imports a vendored copy of the
-plain ES module build directly with relative paths, so no bundler or
-`npm install` is required to run it.
+It has two pages:
+
+- `index.html`: the player, with a live view of the notes each track plays,
+  style and mood buttons, and a link that shares the exact song.
+- `games.html`: a guide to using the library in LittleJS and three.js games.
+
+It imports a vendored copy of the built library with relative paths, so no
+bundler or `npm install` is required to run it. [`examples/vanilla`](../examples/vanilla)
+shows the same player through Vite and the npm package.
 
 ## Regenerating the vendored library
 
@@ -24,9 +29,8 @@ npm run build:demo
 ```
 
 The first command compiles the Rust crate to WASM and builds the TypeScript
-package into `packages/algo-wasm/dist`. The second copies the plain JavaScript
-modules, the `.wasm` binary, and the worklet from `dist` into
-`demo/vendor/algo-wasm/`.
+package into `packages/algo-wasm/dist`. The second copies the library bundle,
+the `.wasm` binary, and the worklet from `dist` into `demo/vendor/algo-wasm/`.
 
 ## Running locally
 

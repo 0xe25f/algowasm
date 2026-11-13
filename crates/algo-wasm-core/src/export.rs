@@ -156,7 +156,7 @@ mod tests {
   use super::write_midi;
   use crate::composition::PatternBank;
   use crate::genome::SongGenome;
-  use crate::profile::amiga_house_95ish;
+  use crate::builtin::amiga_house_95ish;
   use crate::rng::Rng64;
   use crate::types::SectionKind;
 

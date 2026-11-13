@@ -54,4 +54,4 @@ Each tonal track has a slow seeded LFO that moves its filter, sends, and pan, sc
 
 ## Synthesis
 
-The engine uses procedural oscillators, envelopes, a resonant state-variable filter, filtered noise, simple saturation, delay, DC blocking, and a soft limiter. Drums are synthesised from sine, triangle, noise, and metallic oscillator mixtures.
+The engine uses band-limited procedural oscillators, envelopes, a resonant state-variable filter with its own envelope and tempo-synced LFO, filtered noise, simple per-voice saturation, a tempo-synced ping-pong delay, a small stereo reverb, kick ducking, DC blocking, and a look-ahead limiter. Drums are synthesised from sine, triangle, noise, and metallic oscillator mixtures.

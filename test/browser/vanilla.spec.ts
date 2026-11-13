@@ -20,7 +20,7 @@ test('vanilla example switches profile while playing', async ({ page }) => {
   await page.goto('/');
   const profileInput = page.locator('#profileInput');
 
-  await expect(profileInput.locator('option')).toHaveCount(3);
+  await expect(profileInput.locator('option')).toHaveCount(4);
   await expect(profileInput).toHaveValue('amiga_house_95ish');
 
   await page.locator('#lengthInput').fill('00:05');

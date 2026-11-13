@@ -1,3 +1,5 @@
+import { EngineCore } from '../engine-core.js';
+
 declare const sampleRate: number;
 
 declare class AudioWorkletProcessor {
@@ -14,291 +16,42 @@ declare function registerProcessor(
   processorCtor: typeof AudioWorkletProcessor
 ): void;
 
-type WasmFn = (...args: number[]) => number;
-
+/**
+ * A message from the player. Every value is already validated and numeric:
+ * the main thread turns ids into indexes and profiles into flat buffers, so
+ * the audio thread never parses text.
+ */
 type WorkletCommand = {
   type: string;
   id?: number;
-  wasmUrl?: string;
   wasmBytes?: ArrayBuffer;
-  profile?: unknown;
-  seed?: string;
+  profile?: Float32Array;
+  seedHigh?: number;
+  seedLow?: number;
   sampleRate?: number;
-  volume?: number;
   value?: number;
-  trackId?: string;
-  muted?: boolean;
-  solo?: boolean;
-  mood?: string;
+  track?: number;
+  flag?: boolean;
+  mood?: number;
   minBpm?: number;
   maxBpm?: number;
 };
 
-type WorkletExports = Record<string, WebAssembly.ExportValue>;
+/** Frames rendered between checks for new engine events, about 21 ms at 48 kHz. */
+const EVENT_POLL_FRAMES = 1024;
 
-class WorkletWasmBinding {
-  private readonly exports: WorkletExports;
-  private enginePtr = 0;
-  private renderPtr = 0;
-  private renderLength = 0;
-  private renderView?: Float32Array;
-
-  constructor(instance: WebAssembly.Instance) {
-    this.exports = instance.exports as WorkletExports;
-    this.memory;
-  }
-
-  create(profile: unknown, seed: string, requestedSampleRate: number, volume: number): void {
-    if (this.enginePtr !== 0) {
-      this.destroy();
-    }
-
-    const profileJson = JSON.stringify(profile);
-    const { high, low } = splitSeed(seed);
-    const pointer = this.writeString(profileJson);
-
-    try {
-      const result = this.call(
-        'algo_wasm_engine_create',
-        requestedSampleRate,
-        high,
-        low,
-        pointer.pointer,
-        pointer.length
-      );
-
-      if (result === 0) {
-        throw new Error(this.lastError('Engine creation failed.'));
-      }
-
-      this.enginePtr = result;
-      this.setVolume(volume);
-    } finally {
-      this.call('algo_wasm_dealloc', pointer.pointer, pointer.length);
-    }
-  }
-
-  start(): void {
-    this.callCode('algo_wasm_engine_start');
-  }
-
-  pause(): void {
-    this.callCode('algo_wasm_engine_pause');
-  }
-
-  resume(): void {
-    this.callCode('algo_wasm_engine_resume');
-  }
-
-  stop(): void {
-    this.callCode('algo_wasm_engine_stop');
-  }
-
-  setSeed(seed: string): void {
-    const { high, low } = splitSeed(seed);
-    this.callCode('algo_wasm_engine_set_seed', high, low);
-  }
-
-  setProfile(profile: unknown): void {
-    const pointer = this.writeString(JSON.stringify(profile));
-
-    try {
-      const code = this.call('algo_wasm_engine_set_profile', this.enginePtr, pointer.pointer, pointer.length);
-      this.assertCode(code, 'Profile update failed.');
-    } finally {
-      this.call('algo_wasm_dealloc', pointer.pointer, pointer.length);
-    }
-  }
-
-  setVolume(value: number): void {
-    this.callCode('algo_wasm_engine_set_volume', clampUnit(value));
-  }
-
-  setEnergy(value: number): void {
-    this.callCode('algo_wasm_engine_set_energy', clampUnit(value));
-  }
-
-  setIntensity(value: number): void {
-    this.callCode('algo_wasm_engine_set_intensity', clampUnit(value));
-  }
-
-  setMood(mood: string): void {
-    const pointer = this.writeString(mood);
-
-    try {
-      const code = this.call('algo_wasm_engine_set_mood', this.enginePtr, pointer.pointer, pointer.length);
-      this.assertCode(code, 'Mood update failed.');
-    } finally {
-      this.call('algo_wasm_dealloc', pointer.pointer, pointer.length);
-    }
-  }
-
-  setTempoRange(minBpm: number, maxBpm: number): void {
-    this.callCode('algo_wasm_engine_set_tempo_range', minBpm, maxBpm);
-  }
-
-  setMuted(trackId: string, muted: boolean): void {
-    const pointer = this.writeString(trackId);
-
-    try {
-      const code = this.call(
-        'algo_wasm_engine_set_muted',
-        this.enginePtr,
-        pointer.pointer,
-        pointer.length,
-        muted ? 1 : 0
-      );
-      this.assertCode(code, 'Mute update failed.');
-    } finally {
-      this.call('algo_wasm_dealloc', pointer.pointer, pointer.length);
-    }
-  }
-
-  setSolo(trackId: string, solo: boolean): void {
-    const pointer = this.writeString(trackId);
-
-    try {
-      const code = this.call(
-        'algo_wasm_engine_set_solo',
-        this.enginePtr,
-        pointer.pointer,
-        pointer.length,
-        solo ? 1 : 0
-      );
-      this.assertCode(code, 'Solo update failed.');
-    } finally {
-      this.call('algo_wasm_dealloc', pointer.pointer, pointer.length);
-    }
-  }
-
-  renderTo(output: Float32Array): void {
-    this.ensureRenderBuffer(output.length);
-    const code = this.call('algo_wasm_engine_render', this.enginePtr, this.renderPtr, output.length);
-    this.assertCode(code, 'Render failed.');
-
-    if (!this.renderView || this.renderView.buffer !== this.memory.buffer) {
-      this.renderView = new Float32Array(this.memory.buffer, this.renderPtr, this.renderLength);
-    }
-
-    output.set(this.renderView.subarray(0, output.length));
-  }
-
-  snapshot(): unknown {
-    const length = this.call('algo_wasm_engine_snapshot_json', this.enginePtr);
-    return this.readJson(length);
-  }
-
-  events(): unknown[] {
-    const length = this.call('algo_wasm_engine_events_json', this.enginePtr);
-    return this.readJson(length) as unknown[];
-  }
-
-  exportMidi(): Uint8Array {
-    const length = this.call('algo_wasm_engine_export_midi', this.enginePtr);
-    const pointer = this.call('algo_wasm_bytes_ptr');
-    return new Uint8Array(this.memory.buffer, pointer, length).slice();
-  }
-
-  destroy(): void {
-    if (this.renderPtr !== 0) {
-      this.call('algo_wasm_dealloc', this.renderPtr, this.renderLength * 4);
-      this.renderPtr = 0;
-    }
-
-    if (this.enginePtr !== 0) {
-      this.call('algo_wasm_engine_destroy', this.enginePtr);
-      this.enginePtr = 0;
-    }
-  }
-
-  private get memory(): WebAssembly.Memory {
-    const memory = this.exports.memory;
-
-    if (!(memory instanceof WebAssembly.Memory)) {
-      throw new Error('AlgoWASM did not export WebAssembly memory.');
-    }
-
-    return memory;
-  }
-
-  private ensureRenderBuffer(length: number): void {
-    if (this.renderPtr !== 0 && this.renderLength >= length) {
-      return;
-    }
-
-    if (this.renderPtr !== 0) {
-      this.call('algo_wasm_dealloc', this.renderPtr, this.renderLength * 4);
-    }
-
-    this.renderLength = length;
-    this.renderPtr = this.call('algo_wasm_alloc', length * 4);
-    this.renderView = new Float32Array(this.memory.buffer, this.renderPtr, length);
-  }
-
-  private writeString(value: string): { pointer: number; length: number } {
-    const bytes = encodeUtf8(value);
-    const pointer = this.call('algo_wasm_alloc', bytes.length);
-
-    if (pointer === 0) {
-      throw new Error('Could not allocate a WASM string buffer.');
-    }
-
-    new Uint8Array(this.memory.buffer, pointer, bytes.length).set(bytes);
-    return {
-      pointer,
-      length: bytes.length
-    };
-  }
-
-  private readJson(length: number): unknown {
-    if (length === 0) {
-      throw new Error(this.lastError('AlgoWASM returned an empty JSON buffer.'));
-    }
-
-    const pointer = this.call('algo_wasm_json_ptr');
-    const bytes = new Uint8Array(this.memory.buffer, pointer, length);
-    return JSON.parse(decodeUtf8(bytes));
-  }
-
-  private callCode(name: string, ...args: number[]): void {
-    const code = this.call(name, this.enginePtr, ...args);
-    this.assertCode(code, `${String(name)} failed.`);
-  }
-
-  private assertCode(code: number, fallback: string): void {
-    if (code !== 0) {
-      throw new Error(this.lastError(fallback));
-    }
-  }
-
-  private call(name: string, ...args: number[]): number {
-    const value = this.exports[name];
-
-    if (typeof value !== 'function') {
-      throw new Error(`AlgoWASM is missing the ${String(name)} export.`);
-    }
-
-    return (value as WasmFn)(...args);
-  }
-
-  private lastError(fallback: string): string {
-    const length = this.call('algo_wasm_last_error_len');
-
-    if (length === 0) {
-      return fallback;
-    }
-
-    const pointer = this.call('algo_wasm_last_error_ptr');
-    const bytes = new Uint8Array(this.memory.buffer, pointer, length);
-    return decodeUtf8(bytes);
-  }
-}
-
+/**
+ * Renders the engine on the audio thread and relays commands and events.
+ *
+ * The WASM binding is shared with the main thread through `EngineCore`; the
+ * build bundles it into this file, because bundlers treat a worklet URL as a
+ * plain asset and would not follow its imports.
+ */
 class AlgoWasmProcessor extends AudioWorkletProcessor {
-  private binding?: WorkletWasmBinding;
+  private engine?: EngineCore;
   private playing = false;
-  private scratch = new Float32Array(0);
-  private eventCountdown = 0;
+  private destroyed = false;
+  private framesSincePoll = 0;
   private commandQueue: Promise<void> = Promise.resolve();
 
   constructor() {
@@ -306,9 +59,9 @@ class AlgoWasmProcessor extends AudioWorkletProcessor {
     this.port.onmessage = event => {
       const command = event.data as WorkletCommand;
 
-      // Chain onto the queue instead of firing handleCommand directly so
+      // Chain onto the queue instead of calling handleCommand directly, so
       // commands are always applied in the order they were received, even
-      // while an earlier async command (such as 'configure') is still
+      // while an earlier asynchronous command (such as 'configure') is still
       // pending.
       this.commandQueue = this.commandQueue.then(() => this.handleCommand(command));
     };
@@ -319,6 +72,13 @@ class AlgoWasmProcessor extends AudioWorkletProcessor {
     outputs: Float32Array[][],
     _parameters: Record<string, Float32Array>
   ): boolean {
+    // Returning false lets the browser release a destroyed processor.
+    // Otherwise it would keep running for as long as a caller-owned
+    // AudioContext stays open.
+    if (this.destroyed) {
+      return false;
+    }
+
     const output = outputs[0];
     const left = output?.[0];
     const right = output?.[1] ?? left;
@@ -327,51 +87,44 @@ class AlgoWasmProcessor extends AudioWorkletProcessor {
       return true;
     }
 
-    if (!this.binding || !this.playing) {
+    if (!this.engine || !this.playing) {
       left.fill(0);
       right.fill(0);
       return true;
     }
 
-    const length = left.length * 2;
-
-    if (this.scratch.length !== length) {
-      this.scratch = new Float32Array(length);
-    }
-
     try {
-      this.binding.renderTo(this.scratch);
+      this.engine.renderPlanar(left, right);
+      this.framesSincePoll += left.length;
 
-      for (let index = 0; index < left.length; index += 1) {
-        left[index] = this.scratch[index * 2] ?? 0;
-        right[index] = this.scratch[index * 2 + 1] ?? 0;
-      }
-
-      this.eventCountdown -= 1;
-
-      if (this.eventCountdown <= 0) {
-        this.eventCountdown = 16;
-        const events = this.binding.events();
-
-        if (events.length > 0) {
-          this.port.postMessage({
-            type: 'events',
-            events,
-            snapshot: this.binding.snapshot()
-          });
-        }
+      if (this.framesSincePoll >= EVENT_POLL_FRAMES) {
+        this.framesSincePoll = 0;
+        this.postEvents();
       }
     } catch (error) {
       this.playing = false;
       left.fill(0);
       right.fill(0);
-      this.port.postMessage({
-        type: 'error',
-        error: error instanceof Error ? error.message : String(error)
-      });
+      this.port.postMessage({ type: 'error', error: messageOf(error) });
     }
 
     return true;
+  }
+
+  /**
+   * Posts the events buffered since the last poll, with a fresh snapshot.
+   * Both travel as transferred binary buffers, which the player decodes, so
+   * the audio thread builds no objects or strings for them.
+   */
+  private postEvents(): void {
+    const events = this.engine?.copyEvents();
+
+    if (!events || !this.engine) {
+      return;
+    }
+
+    const snapshot = this.engine.copySnapshot();
+    this.port.postMessage({ type: 'events', events, snapshot }, [events.buffer, snapshot.buffer]);
   }
 
   private async handleCommand(command: WorkletCommand): Promise<void> {
@@ -381,245 +134,134 @@ class AlgoWasmProcessor extends AudioWorkletProcessor {
         return;
       }
 
-      if (!this.binding) {
+      const engine = this.engine;
+
+      if (!engine) {
+        // A player whose set-up failed still sends 'destroy'. Honour it even
+        // though no engine exists, so the processor can be released.
+        if (command.type === 'destroy') {
+          this.destroyed = true;
+          this.reply(command.id, true);
+          return;
+        }
+
         throw new Error('AlgoWASM worklet has not been configured.');
       }
 
-      const result = this.applyCommand(command);
-      this.reply(command.id, true, result);
+      const result = this.applyCommand(engine, command);
+      // A destroyed engine has no snapshot to report.
+      const snapshot = this.engine ? engine.copySnapshot() : undefined;
+      this.reply(command.id, true, snapshot, result);
     } catch (error) {
-      this.reply(command.id, false, undefined, error instanceof Error ? error.message : String(error));
+      this.reply(command.id, false, undefined, undefined, messageOf(error));
     }
   }
 
   private async configure(command: WorkletCommand): Promise<void> {
-    if (!command.wasmBytes && !command.wasmUrl) {
-      throw new Error('WASM bytes or a WASM URL are required.');
+    if (!command.wasmBytes || !command.profile) {
+      throw new Error('WASM bytes and a profile are required to configure the worklet.');
     }
 
-    const instance = await instantiateWorkletWasm(command.wasmUrl, command.wasmBytes);
-    const binding = new WorkletWasmBinding(instance);
-    binding.create(command.profile ?? {}, command.seed ?? '1', command.sampleRate ?? sampleRate, command.volume ?? 0.8);
-    this.binding = binding;
-    this.port.postMessage({
-      type: 'ready',
-      snapshot: binding.snapshot()
-    });
+    const { instance } = await WebAssembly.instantiate(command.wasmBytes, {});
+    const engine = new EngineCore(instance);
+    engine.createFromWire(
+      command.sampleRate ?? sampleRate,
+      command.seedHigh ?? 0,
+      command.seedLow ?? 1,
+      command.profile
+    );
+    engine.setVolume(command.value ?? 0.8);
+    this.engine = engine;
+    const snapshot = engine.copySnapshot();
+    this.port.postMessage({ type: 'ready', snapshot }, [snapshot.buffer]);
   }
 
-  private applyCommand(command: WorkletCommand): unknown {
-    const binding = this.requireBinding();
-
+  private applyCommand(engine: EngineCore, command: WorkletCommand): ArrayBuffer | undefined {
     switch (command.type) {
       case 'start':
-        binding.start();
+        engine.start();
         this.playing = true;
-        return binding.snapshot();
+        return undefined;
       case 'pause':
-        binding.pause();
+        engine.pause();
         this.playing = false;
-        return binding.snapshot();
+        return undefined;
       case 'resume':
-        binding.resume();
+        engine.resume();
         this.playing = true;
-        return binding.snapshot();
+        return undefined;
       case 'stop':
-        binding.stop();
+        engine.stop();
         this.playing = false;
-        return binding.snapshot();
+        return undefined;
       case 'set-seed':
-        binding.setSeed(command.seed ?? '1');
-        return binding.snapshot();
+        // The song restarts from its first bar and keeps its play state.
+        engine.setSeedParts(command.seedHigh ?? 0, command.seedLow ?? 1);
+        return undefined;
       case 'set-profile':
-        binding.setProfile(command.profile ?? {});
-        return binding.snapshot();
+        if (!command.profile) {
+          throw new Error('A profile is required.');
+        }
+
+        engine.setProfileWire(command.profile);
+        return undefined;
       case 'set-volume':
-        binding.setVolume(command.value ?? 0.8);
-        return binding.snapshot();
+        engine.setVolume(command.value ?? 0.8);
+        return undefined;
       case 'set-energy':
-        binding.setEnergy(command.value ?? 0.5);
-        return binding.snapshot();
+        engine.setEnergy(command.value ?? 0.5);
+        return undefined;
       case 'set-intensity':
-        binding.setIntensity(command.value ?? 0.5);
-        return binding.snapshot();
+        engine.setIntensity(command.value ?? 0.5);
+        return undefined;
       case 'set-mood':
-        binding.setMood(command.mood ?? 'dark');
-        return binding.snapshot();
+        engine.setMoodIndex(command.mood ?? 0);
+        return undefined;
       case 'set-tempo-range':
-        binding.setTempoRange(command.minBpm ?? 118, command.maxBpm ?? 138);
-        return binding.snapshot();
+        engine.setTempoRange(command.minBpm ?? 0, command.maxBpm ?? 0);
+        return undefined;
       case 'set-muted':
-        binding.setMuted(command.trackId ?? '', command.muted ?? false);
-        return binding.snapshot();
+        engine.setMutedIndex(command.track ?? -1, command.flag ?? false);
+        return undefined;
       case 'set-solo':
-        binding.setSolo(command.trackId ?? '', command.solo ?? false);
-        return binding.snapshot();
-      case 'export-midi': {
-        const bytes = binding.exportMidi();
-        return bytes.buffer;
-      }
+        engine.setSoloIndex(command.track ?? -1, command.flag ?? false);
+        return undefined;
+      case 'export-midi':
+        return engine.exportMidi().buffer as ArrayBuffer;
       case 'destroy':
-        binding.destroy();
-        this.binding = undefined;
+        engine.destroy();
+        this.engine = undefined;
         this.playing = false;
+        this.destroyed = true;
         return undefined;
       default:
         throw new Error(`Unknown AlgoWASM command: ${command.type}.`);
     }
   }
 
-  private requireBinding(): WorkletWasmBinding {
-    if (!this.binding) {
-      throw new Error('AlgoWASM worklet has not been configured.');
-    }
-
-    return this.binding;
-  }
-
-  private reply(id: number | undefined, ok: boolean, result?: unknown, error?: string): void {
+  private reply(
+    id: number | undefined,
+    ok: boolean,
+    snapshot?: Float64Array,
+    result?: ArrayBuffer,
+    error?: string
+  ): void {
     if (id === undefined) {
+      // Commands without an id come from configure, which reports failure
+      // through the error channel instead of a reply.
       if (!ok && error) {
-        this.port.postMessage({
-          type: 'error',
-          error
-        });
+        this.port.postMessage({ type: 'error', error });
       }
 
       return;
     }
 
-    this.port.postMessage({
-      type: 'command-result',
-      id,
-      ok,
-      result,
-      error
-    });
+    this.port.postMessage({ type: 'command-result', id, ok, snapshot, result, error });
   }
 }
 
-async function instantiateWorkletWasm(
-  url: string | undefined,
-  wasmBytes: ArrayBuffer | undefined
-): Promise<WebAssembly.Instance> {
-  if (wasmBytes) {
-    const result = await WebAssembly.instantiate(wasmBytes, {});
-    return result.instance;
-  }
-
-  if (!url) {
-    throw new Error('WASM URL is required when bytes are not supplied.');
-  }
-
-  const response = await fetch(url);
-
-  if (!response.ok) {
-    throw new Error(`Could not load AlgoWASM from ${url}. The server returned ${response.status}.`);
-  }
-
-  if (WebAssembly.instantiateStreaming) {
-    try {
-      const result = await WebAssembly.instantiateStreaming(response, {});
-      return result.instance;
-    } catch (error) {
-      if (response.headers.get('content-type') === 'application/wasm') {
-        throw error;
-      }
-    }
-  }
-
-  const fallback = await fetch(url);
-  const bytes = await fallback.arrayBuffer();
-  const result = await WebAssembly.instantiate(bytes, {});
-  return result.instance;
-}
-
-function splitSeed(seed: string): { high: number; low: number } {
-  const value = BigInt.asUintN(64, BigInt(seed));
-
-  return {
-    high: Number((value >> 32n) & 0xffff_ffffn),
-    low: Number(value & 0xffff_ffffn)
-  };
-}
-
-function clampUnit(value: number): number {
-  if (!Number.isFinite(value)) {
-    return 0;
-  }
-
-  return Math.min(1, Math.max(0, value));
-}
-
-function encodeUtf8(value: string): Uint8Array {
-  if (typeof TextEncoder !== 'undefined') {
-    return new TextEncoder().encode(value);
-  }
-
-  const bytes: number[] = [];
-
-  for (const character of value) {
-    const point = character.codePointAt(0) ?? 0;
-
-    if (point <= 0x7f) {
-      bytes.push(point);
-    } else if (point <= 0x7ff) {
-      bytes.push(0xc0 | (point >> 6), 0x80 | (point & 0x3f));
-    } else if (point <= 0xffff) {
-      bytes.push(0xe0 | (point >> 12), 0x80 | ((point >> 6) & 0x3f), 0x80 | (point & 0x3f));
-    } else {
-      bytes.push(
-        0xf0 | (point >> 18),
-        0x80 | ((point >> 12) & 0x3f),
-        0x80 | ((point >> 6) & 0x3f),
-        0x80 | (point & 0x3f)
-      );
-    }
-  }
-
-  return new Uint8Array(bytes);
-}
-
-function decodeUtf8(bytes: Uint8Array): string {
-  if (typeof TextDecoder !== 'undefined') {
-    return new TextDecoder().decode(bytes);
-  }
-
-  let output = '';
-  let index = 0;
-
-  while (index < bytes.length) {
-    const first = bytes[index] ?? 0;
-
-    if (first < 0x80) {
-      output += String.fromCodePoint(first);
-      index += 1;
-    } else if (first < 0xe0) {
-      const second = bytes[index + 1] ?? 0;
-      output += String.fromCodePoint(((first & 0x1f) << 6) | (second & 0x3f));
-      index += 2;
-    } else if (first < 0xf0) {
-      const second = bytes[index + 1] ?? 0;
-      const third = bytes[index + 2] ?? 0;
-      output += String.fromCodePoint(
-        ((first & 0x0f) << 12) | ((second & 0x3f) << 6) | (third & 0x3f)
-      );
-      index += 3;
-    } else {
-      const second = bytes[index + 1] ?? 0;
-      const third = bytes[index + 2] ?? 0;
-      const fourth = bytes[index + 3] ?? 0;
-      output += String.fromCodePoint(
-        ((first & 0x07) << 18)
-          | ((second & 0x3f) << 12)
-          | ((third & 0x3f) << 6)
-          | (fourth & 0x3f)
-      );
-      index += 4;
-    }
-  }
-
-  return output;
+function messageOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 registerProcessor('algo-wasm-processor', AlgoWasmProcessor);

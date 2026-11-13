@@ -2,7 +2,9 @@
 
 ## Render path
 
-The real-time path uses a fixed voice pool, preallocated render buffers, and simple DSP. It avoids logging and JSON parsing inside the audio callback.
+The real-time path uses a fixed voice pool, preallocated render buffers, and simple DSP. The audio callback does no logging, parses no text, and allocates nothing in WASM. This includes section changes: generating a new section takes about 6 microseconds and uses no heap memory.
+
+When events are pending, the worklet copies two small buffers and posts them to the main thread, about every 21 ms. That is the only allocation on the audio thread.
 
 ## Measured checks
 
@@ -14,7 +16,32 @@ Current tests verify:
 - limiter bounds;
 - no stuck notes after stop;
 - MIDI export header;
-- profile validation and JSON round trips.
+- profile validation, including hostile values;
+- that no beat event is lost when events are read less often than audio is rendered;
+- size budgets for the WASM binary and the JavaScript bundles.
+
+## Benchmarks
+
+Measured on 2026-11-13 with Node.js 22 (V8) on a cloud x86-64 virtual machine, rendering 60 seconds at 48 kHz in 128-frame blocks, energy 0.87, seed 7158349371545587579.
+
+| Profile | Speed |
+| --- | --- |
+| Amiga House 95ish | 31 times real time |
+| Downtempo Breakbeat | 39 times real time |
+| Dub Deep House | 33 times real time |
+| Dubstep | 31 times real time |
+
+Version 1.1.0 rendered the Amiga House profile natively at about 88 times real time on the same machine, against about 54 times for 1.2.0. The extra cost is the reverb, the look-ahead limiter, band-limited oscillators, and notes that now ring for their full release time. Browser figures were not measured.
+
+The release build uses `opt-level = "s"`. Against `opt-level = 3` it is about 10% slower and a third smaller (103 KB against 154 KB).
+
+## Release sizes
+
+| File | 1.1.0 | 1.2.0 | 1.2.0 gzipped |
+| --- | --- | --- | --- |
+| `algo_wasm.wasm` | 347,263 bytes | 103,718 bytes | 47,077 bytes |
+| `index.js` | not bundled | 35,056 bytes | 9,409 bytes |
+| `worklet/algo-worklet.js` | not bundled | 7,510 bytes | 2,377 bytes |
 
 ## Practical targets
 

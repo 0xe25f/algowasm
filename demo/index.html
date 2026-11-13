@@ -3,87 +3,220 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>AlgoWASM Demo</title>
+    <title>AlgoWASM: endless generated music for the web</title>
+    <meta
+      name="description"
+      content="AlgoWASM is a tiny WebAssembly engine that composes and plays endless music in the browser from a single seed. No samples and no dependencies."
+    >
     <link rel="stylesheet" href="./styles.css">
   </head>
   <body>
-    <main class="shell">
-      <section class="panel" aria-labelledby="title">
-        <div>
-          <p class="eyebrow">AlgoWASM</p>
-          <h1 id="title">Generated House Engine</h1>
+    <a class="skip-link" href="#player">Skip to the player</a>
+
+    <header class="site-header">
+      <a class="brand" href="./" aria-label="AlgoWASM home">
+        <span class="brand-mark" aria-hidden="true"></span>
+        AlgoWASM
+      </a>
+      <nav aria-label="Site">
+        <a href="./" aria-current="page">Demo</a>
+        <a href="./games.html">Game Guide</a>
+        <a href="https://github.com/0xe25f/algowasm/blob/main/docs/getting-started.md">Docs</a>
+      </nav>
+      <a class="star-button" href="https://github.com/0xe25f/algowasm">
+        <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
+          <path
+            d="M8 .25a.75.75 0 0 1 .673.418l1.882 3.815 4.21.612a.75.75 0 0 1 .416 1.279l-3.046 2.97.719 4.192a.75.75 0 0 1-1.088.791L8 12.347l-3.766 1.98a.75.75 0 0 1-1.088-.79l.72-4.194L.818 6.374a.75.75 0 0 1 .416-1.28l4.21-.611L7.327.668A.75.75 0 0 1 8 .25Z"
+          />
+        </svg>
+        Star on GitHub
+      </a>
+    </header>
+
+    <main>
+      <section class="hero" aria-labelledby="title">
+        <p class="eyebrow">WebAssembly music engine</p>
+        <h1 id="title">Endless music from a single number.</h1>
+        <p class="lede">
+          AlgoWASM composes and plays a full track in your browser, live, from one seed. No
+          samples, no dependencies, and the same seed always plays the same song.
+        </p>
+        <ul class="facts" aria-label="Key facts">
+          <li><strong>47 KB</strong> engine, gzipped</li>
+          <li><strong>0</strong> dependencies</li>
+          <li><strong>11</strong> synthesised tracks</li>
+          <li><strong>2<sup>64</sup></strong> songs per profile</li>
+        </ul>
+      </section>
+
+      <section id="player" class="player" aria-labelledby="player-title">
+        <h2 id="player-title" class="visually-hidden">Player</h2>
+
+        <div class="stage">
+          <canvas
+            id="visualiser"
+            width="960"
+            height="330"
+            role="img"
+            aria-label="Live view of the notes each track is playing"
+          ></canvas>
+          <dl class="readout">
+            <div>
+              <dt>Section</dt>
+              <dd id="section">intro</dd>
+            </div>
+            <div>
+              <dt>Bar</dt>
+              <dd id="bar">0</dd>
+            </div>
+            <div>
+              <dt>Tempo</dt>
+              <dd id="tempo">-</dd>
+            </div>
+            <div>
+              <dt>Time</dt>
+              <dd id="time">00:00 / 02:00</dd>
+            </div>
+          </dl>
         </div>
 
-        <div class="transport">
-          <button id="start" type="button">Start</button>
-          <button id="pause" type="button">Pause</button>
-          <button id="stop" type="button">Stop</button>
-          <button id="random" type="button">New Random</button>
+        <div class="controls">
+          <div class="transport">
+            <button id="start" class="primary" type="button">Play</button>
+            <button id="pause" type="button">Pause</button>
+            <button id="stop" type="button">Stop</button>
+            <button id="random" type="button">New song</button>
+          </div>
+
+          <output id="status" class="status" aria-live="polite">Press Play to load the engine.</output>
+
+          <fieldset class="chips">
+            <legend>Style</legend>
+            <div id="profiles" class="chip-row"></div>
+          </fieldset>
+
+          <fieldset class="chips">
+            <legend>Mood</legend>
+            <div id="moods" class="chip-row"></div>
+          </fieldset>
+
+          <div class="sliders">
+            <label>
+              <span>Energy <output id="energyValue">0.55</output></span>
+              <input id="energy" type="range" min="0" max="1" step="0.01" value="0.55">
+              <small>How busy the arrangement gets.</small>
+            </label>
+            <label>
+              <span>Intensity <output id="intensityValue">0.50</output></span>
+              <input id="intensity" type="range" min="0" max="1" step="0.01" value="0.5">
+              <small>How hard it plays.</small>
+            </label>
+          </div>
+
+          <div class="fields">
+            <label>
+              Seed
+              <input id="seedInput" type="text" inputmode="numeric" value="1995" autocomplete="off">
+            </label>
+            <label>
+              Length
+              <input
+                id="lengthInput"
+                type="text"
+                inputmode="numeric"
+                value="02:00"
+                autocomplete="off"
+                aria-describedby="lengthHint"
+              >
+            </label>
+            <button id="share" type="button">Copy link to this song</button>
+          </div>
+          <p id="lengthHint" class="hint">
+            Length uses MM:SS, for example 02:30. The link remembers the seed, style, and mood.
+          </p>
         </div>
+      </section>
 
-        <div class="track-settings">
-          <label>
-            Seed
-            <input id="seedInput" type="text" inputmode="numeric" value="1995">
-          </label>
-
-          <label>
-            Length
-            <input id="lengthInput" type="text" inputmode="numeric" value="02:00" aria-describedby="lengthHint">
-          </label>
+      <section class="features" aria-labelledby="features-title">
+        <h2 id="features-title">Built for games and interactive pages</h2>
+        <div class="feature-grid">
+          <article>
+            <h3>The same song every time</h3>
+            <p>
+              A seed and a profile always produce the same notes. Give each level its own seed and
+              every player hears the same soundtrack.
+            </p>
+          </article>
+          <article>
+            <h3>Music that follows the action</h3>
+            <p>
+              Turn energy and intensity up as things heat up, change the mood, or mute a track. The
+              music responds without a pause or a reload.
+            </p>
+          </article>
+          <article>
+            <h3>Beat-accurate events</h3>
+            <p>
+              Every beat, bar, and section change is reported to your code, so lights, enemies, and
+              camera shakes can land on the beat.
+            </p>
+          </article>
+          <article>
+            <h3>Nothing to download but the engine</h3>
+            <p>
+              Every sound is synthesised live. There are no audio files to licence, host, or stream,
+              and the whole engine is smaller than one short sample.
+            </p>
+          </article>
         </div>
-        <p id="lengthHint" class="hint">Use MM:SS, for example 02:30.</p>
+      </section>
 
-        <label>
-          Profile
-          <select id="profileInput"></select>
-        </label>
+      <section class="quickstart" aria-labelledby="quickstart-title">
+        <h2 id="quickstart-title">Three steps to music</h2>
+        <pre><code>import { AlgoWasmPlayer, builtInProfiles } from '@algo-wasm/algo-wasm';
 
-        <label>
-          Energy
-          <input id="energy" type="range" min="0" max="1" step="0.01" value="0.55">
-        </label>
+const player = await AlgoWasmPlayer.create({
+  wasmUrl: '/algo_wasm.wasm',
+  workletUrl: '/algo-worklet.js',
+  profile: builtInProfiles.dubstep(),
+  seed: 1995n
+});
 
-        <label>
-          Intensity
-          <input id="intensity" type="range" min="0" max="1" step="0.01" value="0.5">
-        </label>
+// Browsers only allow audio after a click, tap, or key press.
+button.addEventListener('click', () =&gt; player.start());
 
-        <label>
-          Mood
-          <select id="mood">
-            <option value="dark">Dark</option>
-            <option value="bright">Bright</option>
-            <option value="tense">Tense</option>
-            <option value="calm">Calm</option>
-          </select>
-        </label>
-
-        <output id="status" class="status">Ready.</output>
-        <dl class="snapshot">
-          <div>
-            <dt>Time</dt>
-            <dd id="time">00:00 / 02:00</dd>
-          </div>
-          <div>
-            <dt>Section</dt>
-            <dd id="section">intro</dd>
-          </div>
-          <div>
-            <dt>Bar</dt>
-            <dd id="bar">0</dd>
-          </div>
-          <div>
-            <dt>Seed</dt>
-            <dd id="seed">1995</dd>
-          </div>
-        </dl>
-
-        <p class="footnote">
-          <a href="https://github.com/0xe25f/algowasm">View the AlgoWASM source on GitHub</a>
+player.on('beat', event =&gt; flashTheLights(event.beat));
+player.setEnergy(0.9);</code></pre>
+        <p>
+          Making a game? The <a href="./games.html">game guide</a> shows complete set-ups for
+          LittleJS and three.js.
         </p>
       </section>
+
+      <section class="star-callout" aria-labelledby="star-title">
+        <h2 id="star-title">Like what you hear?</h2>
+        <p>
+          AlgoWASM is free and open source. A star on GitHub costs nothing, helps other developers
+          find it, and tells us it is worth improving.
+        </p>
+        <a class="star-button large" href="https://github.com/0xe25f/algowasm">
+          <svg viewBox="0 0 16 16" width="20" height="20" aria-hidden="true">
+            <path
+              d="M8 .25a.75.75 0 0 1 .673.418l1.882 3.815 4.21.612a.75.75 0 0 1 .416 1.279l-3.046 2.97.719 4.192a.75.75 0 0 1-1.088.791L8 12.347l-3.766 1.98a.75.75 0 0 1-1.088-.79l.72-4.194L.818 6.374a.75.75 0 0 1 .416-1.28l4.21-.611L7.327.668A.75.75 0 0 1 8 .25Z"
+            />
+          </svg>
+          Star AlgoWASM on GitHub
+        </a>
+      </section>
     </main>
+
+    <footer class="site-footer">
+      <p>
+        AlgoWASM is released under the AGPL-3.0-or-later licence.
+        <a href="https://github.com/0xe25f/algowasm">Source on GitHub</a>
+      </p>
+    </footer>
+
     <script type="module" src="./main.js"></script>
   </body>
 </html>
